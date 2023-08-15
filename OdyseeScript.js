@@ -15,6 +15,7 @@ const REGEX_CHANNEL_URL = new RegExp("lbry://@(.*?)#(.*)");
 const REGEX_CHANNEL_URL2 = new RegExp("https://odysee.com/@(.*)");
 
 const PLATFORM = "Odysee";
+const PLATFORM_CLAIMTYPE = 3;
 
 var config = {};
 
@@ -205,7 +206,7 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 	const comments = result.result?.items?.map(i => {
 		const c = new Comment({
 			contextUrl: contextUrl,
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, i.channel_id, config.id),
+			author: new PlatformAuthorLink(new PlatformID(PLATFORM, i.channel_id, config.id, PLATFORM_CLAIMTYPE),
 				i.channel_name ?? "",
 				i.channel_url,
 				thumbnailMap[i.channel_id] ?? ""),
@@ -439,7 +440,7 @@ function resolveClaims(claims) {
 
 //Convert a channel to an AuthorLink
 function channelToAuthorLink(channel) {
-    return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, config.id),
+    return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, config.id, PLATFORM_CLAIMTYPE),
            			channel.name,
            			channel.url,
            			channel.thumbnail ?? "");
@@ -448,7 +449,7 @@ function channelToAuthorLink(channel) {
 //Convert a LBRY Channel (claim) to a PlatformChannel
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
 	return new PlatformChannel({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
+		id: new PlatformID(PLATFORM, lbry.claim_id, config.id, PLATFORM_CLAIMTYPE),
 		name: lbry.value?.title ?? "",
 		thumbnail: lbry.value?.thumbnail?.url ?? "",
 		banner: lbry.value?.cover?.url,
@@ -465,7 +466,7 @@ function lbryVideoToPlatformVideo(lbry) {
 		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, config.id), 
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, config.id, PLATFORM_CLAIMTYPE), 
 			lbry.signing_channel?.value?.title ?? "", 
 			lbry.signing_channel?.permanent_url ?? "",
 			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
@@ -567,7 +568,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, config.id), 
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, config.id, PLATFORM_CLAIMTYPE), 
 			lbry.signing_channel.value.title ?? "", 
 			lbry.signing_channel.permanent_url,
 			lbry.signing_channel.value?.thumbnail?.url ?? ""),
