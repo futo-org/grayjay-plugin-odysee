@@ -129,6 +129,15 @@ source.getChannelContents = function(url) {
 	});
 };
 
+source.getChannelTemplateByClaimMap = () => {
+    return {
+        //Odysee
+        3: {
+            0: URL_BASE + "/{{CLAIMVALUE}}"
+        }
+    };
+};
+
 //Video
 source.isContentDetailsUrl = function(url) {
 	return REGEX_DETAILS_URL.test(url)
