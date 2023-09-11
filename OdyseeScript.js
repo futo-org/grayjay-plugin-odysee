@@ -133,7 +133,8 @@ source.getChannelTemplateByClaimMap = () => {
     return {
         //Odysee
         3: {
-            0: URL_BASE + "/{{CLAIMVALUE}}"
+			0: "lbry://{{CLAIMVALUE}}"
+			//Unused! 1: claim id
         }
     };
 };
