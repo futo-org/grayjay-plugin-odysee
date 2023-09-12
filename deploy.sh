@@ -13,11 +13,11 @@ cp OdyseeConfig.json $DOCUMENT_ROOT/Odysee
 cp OdyseeScript.js $DOCUMENT_ROOT/Odysee
 
 # Notify Cloudflare to wipe the CDN cache
-echo "Purging Cloudflare cache..."
+echo "Purging Cloudflare cache for zone $CLOUDFLARE_ZONE_ID..."
 curl -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache" \
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
      -H "Content-Type: application/json" \
-     --data '{"purge_everything":true}'
+     --data '{"files":["https://plugins.grayjay.app/Odysee/odysee.png", "https://plugins.grayjay.app/Odysee/OdyseeConfig.json", "https://plugins.grayjay.app/Odysee/OdyseeScript.js"]}'
 
 # Take site back online
 echo "Bringing site back online..."
