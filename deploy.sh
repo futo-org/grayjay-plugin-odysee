@@ -7,9 +7,10 @@ touch $DOCUMENT_ROOT/maintenance.file
 
 # Swap over the content
 echo "Deploying content..."
-cp odysee.png $DOCUMENT_ROOT/
-cp OdyseeConfig.json $DOCUMENT_ROOT/
-cp OdyseeScript.js $DOCUMENT_ROOT/
+mkdir -p $DOCUMENT_ROOT/Odysee
+cp odysee.png $DOCUMENT_ROOT/Odysee
+cp OdyseeConfig.json $DOCUMENT_ROOT/Odysee
+cp OdyseeScript.js $DOCUMENT_ROOT/Odysee
 
 # Notify Cloudflare to wipe the CDN cache
 echo "Purging Cloudflare cache..."
