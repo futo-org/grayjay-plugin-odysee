@@ -118,10 +118,24 @@ source.getChannel = function (url) {
 	channel.subscribers = getChannelSubCount(channel.url);
 	return channel;
 };
-source.getChannelContents = function(url) {
-	const claimId = url.match(REGEX_CHANNEL_URL)[2];
+source.getChannelContents = function (url) {
+	let urlMatch = REGEX_CHANNEL_URL.exec(url);
+	if (!urlMatch) {
+		urlMatch = REGEX_CHANNEL_URL2.exec(url);
+	}
+	if (!urlMatch) {
+		throw new ScriptException("Channel search not implemented for this URL type");
+	}
+
+	let channelId = urlMatch[2];
+	if (!channelId) {
+		const curl = `${URL_BASE}/${urlMatch[1]}`;
+		const c = source.getChannel(curl);
+		channelId = c.id.value;
+	}
+
 	return getQueryPager({
-		channel_ids: [claimId],
+		channel_ids: [channelId],
 		page: 1,
 		page_size: 8,
 		claim_type: [CLAIM_TYPE_STREAM],
