@@ -250,6 +250,8 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 //Internals
 function getOdyseeContentData() {
 	const resp = http.GET(URL_CONTENT, {});
+	if(!resp.isOk)
+	    throw new ScriptException("Failed request [" + URL_CONTENT + "] (" + resp.code + ")");
 	const contentResp = JSON.parse(resp.body);
 	
 	return contentResp.data["en"];
