@@ -535,6 +535,20 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			}));
 		}
 
+		const downloadUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash.substring(0, 6)}.mp4`;
+		console.log("downloadUrl2", downloadUrl2);
+		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-0", "Origin": "https://odysee.com" });
+		if (downloadResponse2.isOk) {
+			sources.push(new VideoUrlSource({
+				name: "Original " + (lbry.value?.video?.height ?? 0) + "P",
+				url: downloadUrl2,
+				width: lbry.value?.video?.width ?? 0,
+				height: lbry.value?.video?.height ?? 0,
+				duration: lbry.value?.video?.duration ?? 0,
+				container: downloadResponse.headers["content-type"]?.[0] ?? "video/mp4"
+			}));
+		}
+
 		source = {
 			video: new VideoSourceDescriptor(sources)
 		};
