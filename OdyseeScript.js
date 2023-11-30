@@ -526,7 +526,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0" });
 		if (downloadResponse.isOk) {
 			sources.push(new VideoUrlSource({
-				name: "Original " + (lbry.value?.video?.height ?? 0) + "P",
+				name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v4)",
 				url: downloadUrl,
 				width: lbry.value?.video?.width ?? 0,
 				height: lbry.value?.video?.height ?? 0,
@@ -540,12 +540,12 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-0", "Origin": "https://odysee.com" });
 		if (downloadResponse2.isOk) {
 			sources.push(new VideoUrlSource({
-				name: "Original " + (lbry.value?.video?.height ?? 0) + "P",
+				name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v6)",
 				url: downloadUrl2,
 				width: lbry.value?.video?.width ?? 0,
 				height: lbry.value?.video?.height ?? 0,
 				duration: lbry.value?.video?.duration ?? 0,
-				container: downloadResponse.headers["content-type"]?.[0] ?? "video/mp4"
+				container: downloadResponse2.headers["content-type"]?.[0] ?? "video/mp4"
 			}));
 		}
 
