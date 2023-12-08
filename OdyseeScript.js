@@ -171,7 +171,7 @@ source.getSubComments = function (comment) {
 		comment = JSON.parse(comment);
 	}
 
-	return getCommentsPager(comment.context.claimId, comment.context.claimId, 1, false, comment.context.commentId);
+	return getCommentsPager(comment.contextUrl, comment.context.claimId, 1, false, comment.context.commentId);
 }
 
 function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) {
