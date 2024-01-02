@@ -506,37 +506,47 @@ function lbryVideoToPlatformVideo(lbry) {
 }
 //Convert a LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
+	const headersToAdd = {
+		"Origin": "https://odysee.com"
+	};
+
 	const sdHash = lbry.value?.source?.sd_hash;
 	let source = null;
 	if (sdHash) {
 		const sources = [];
 
 		const hlsUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash}/master.m3u8`;
-		const hlsResponse2 = http.GET(hlsUrl2, {});
+		const hlsResponse2 = http.GET(hlsUrl2, headersToAdd);
 		if (hlsResponse2.isOk) {
 			sources.push(new HLSSource({
 				name: "HLS (v6)",
 				url: hlsUrl2,
 				duration: lbry.value?.video?.duration ?? 0,
-				priority: true
+				priority: true,
+				requestModifier: {
+					headers: headersToAdd
+				}
 			}));
 		} else {
 			const hlsUrl = `https://player.odycdn.com/api/v4/streams/tc/${lbry.name}/${lbry.claim_id}/${sdHash}/master.m3u8`;
-			const hlsResponse = http.GET(hlsUrl, {});
+			const hlsResponse = http.GET(hlsUrl, headersToAdd);
 			if (hlsResponse.isOk) {
 				sources.push(new HLSSource({
 					name: "HLS",
 					url: hlsUrl,
 					duration: lbry.value?.video?.duration ?? 0,
-					priority: true
+					priority: true,
+					requestModifier: {
+						headers: headersToAdd
+					}
 				}));
 			}
 		}
 
 		const downloadUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash.substring(0, 6)}.mp4`;
 		console.log("downloadUrl2", downloadUrl2);
-		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-10", "Origin": "https://odysee.com" });
-		console.log("downloadResponse2", downloadResponse2);
+		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-10", ... headersToAdd });
+		log("downloadResponse2: " + JSON.stringify(downloadResponse2));
 		if (downloadResponse2.isOk) {
 			sources.push(new VideoUrlSource({
 				name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v6)",
@@ -544,11 +554,14 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 				width: lbry.value?.video?.width ?? 0,
 				height: lbry.value?.video?.height ?? 0,
 				duration: lbry.value?.video?.duration ?? 0,
-				container: downloadResponse2.headers["content-type"]?.[0] ?? "video/mp4"
+				container: downloadResponse2.headers["content-type"]?.[0] ?? "video/mp4",
+				requestModifier: {
+					headers: headersToAdd
+				}
 			}));
 		} else {
 			const downloadUrl = `https://player.odycdn.com/api/v4/streams/free/${lbry.name}/${lbry.claim_id}/${sdHash.substring(0, 6)}`;
-			const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0" });
+			const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0", ... headersToAdd });
 			if (downloadResponse.isOk) {
 				sources.push(new VideoUrlSource({
 					name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v4)",
@@ -556,7 +569,10 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 					width: lbry.value?.video?.width ?? 0,
 					height: lbry.value?.video?.height ?? 0,
 					duration: lbry.value?.video?.duration ?? 0,
-					container: downloadResponse.headers["content-type"]?.[0] ?? "video/mp4"
+					container: downloadResponse.headers["content-type"]?.[0] ?? "video/mp4",
+					requestModifier: {
+						headers: headersToAdd
+					}
 				}));
 			}
 		}
@@ -573,7 +589,10 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 					width: lbry.value?.video?.width ?? 0,
 					height: lbry.value?.video?.height ?? 0,
 					duration: lbry.value?.video?.duration ?? 0,
-					container: lbry.value?.source?.media_type ?? ""
+					container: lbry.value?.source?.media_type ?? "",
+					requestModifier: {
+						headers: headersToAdd
+					}
 				})
 			])
 		};
@@ -584,7 +603,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			
 	let rating = null;	
 	let viewCount = 0;
-	const newUserResp = http.GET(URL_USER_NEW, {});
+	const newUserResp = http.GET(URL_USER_NEW, headersToAdd);
 	if (newUserResp && newUserResp.isOk) {
 		const newUserObj = JSON.parse(newUserResp.body);
 		if (newUserObj && newUserObj.success && newUserObj.data) {
