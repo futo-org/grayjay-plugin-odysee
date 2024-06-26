@@ -1007,5 +1007,3 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		...source
 	});
 }
-
-log("LOADED");
