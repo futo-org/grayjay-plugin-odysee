@@ -25,8 +25,17 @@
 		"lighthouse.odysee.tv",
 		"cdn.lbryplayer.xyz",
 		"player.odycdn.com",
-		"comments.odysee.tv"
+		"comments.odysee.tv",
+		"watchman.na-backend.odysee.com"
 	],
 
-	"supportedClaimTypes": [3]
+	"supportedClaimTypes": [3],
+
+	"authentication": {
+		"loginUrl": "https://odysee.com/$/signin",
+		"userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+		"domainHeadersToFind": {
+			"api.na-backend.odysee.com": ["X-Lbry-Auth-Token"]
+		}
+	}
 }
