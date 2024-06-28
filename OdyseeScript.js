@@ -28,6 +28,7 @@ const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
 
 let local_state
+let local_settings
 
 //Source Method
 source.enable = function (config, settings, savedState) {
