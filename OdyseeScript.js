@@ -24,16 +24,23 @@ const REGEX_COLLECTION = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F-]+?)
 const REGEX_FAVORITES = /^https:\/\/odysee\.com\/\$\/playlist\/favorites$/
 const REGEX_WATCH_LATER = /^https:\/\/odysee\.com\/\$\/playlist\/watchlater$/
 
-
 const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
 
-var config = {};
 let local_state
 
 //Source Method
-source.enable = function (conf, _settings, savedState) {
-	config = conf ?? {};
+source.enable = function (config, settings, savedState) {
+	if (IS_TESTING) {
+        log("IS_TESTING true")
+        log("logging configuration")
+        log(config)
+        log("logging settings")
+        log(settings)
+        log("logging savedState")
+        log(savedState)
+    }
+	local_settings = settings
 	if (savedState === null) {
 		if (bridge.isLoggedIn()) {
 			const response = http
@@ -356,6 +363,9 @@ source.getUserPlaylists = function () {
 	return [...collections, ...playlists, ...["https://odysee.com/$/playlist/watchlater", "https://odysee.com/$/playlist/favorites"]]
 }
 source.getPlaybackTracker = function (url) {
+	if (!local_settings.odyseeActivity) {
+        return null
+    }
 	return new OdyseePlaybackTracker(url)
 }
 class OdyseePlaybackTracker extends PlaybackTracker {
@@ -510,7 +520,7 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 	const comments = result.result?.items?.map(i => {
 		const c = new Comment({
 			contextUrl: contextUrl,
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, i.channel_id, config.id, PLATFORM_CLAIMTYPE),
+			author: new PlatformAuthorLink(new PlatformID(PLATFORM, i.channel_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 				i.channel_name ?? "",
 				i.channel_url,
 				thumbnailMap[i.channel_id] ?? ""),
@@ -820,7 +830,7 @@ function resolveClaims2(claims) {
 
 //Convert a channel to an AuthorLink
 function channelToAuthorLink(channel) {
-	return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, config.id, PLATFORM_CLAIMTYPE),
+	return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, plugin.config.id, PLATFORM_CLAIMTYPE),
 		channel.name,
 		channel.url,
 		channel.thumbnail ?? "");
@@ -829,7 +839,7 @@ function channelToAuthorLink(channel) {
 //Convert a LBRY Channel (claim) to a PlatformChannel
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
 	return new PlatformChannel({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id, PLATFORM_CLAIMTYPE),
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 		name: lbry.value?.title ?? "",
 		thumbnail: lbry.value?.thumbnail?.url ?? "",
 		banner: lbry.value?.cover?.url,
@@ -843,10 +853,10 @@ function lbryChannelToPlatformChannel(lbry, subs = 0) {
 //Convert a LBRY Video (claim) to a PlatformVideo
 function lbryVideoToPlatformVideo(lbry) {
 	return new PlatformVideo({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, config.id, PLATFORM_CLAIMTYPE),
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 			lbry.signing_channel?.value?.title ?? "",
 			lbry.signing_channel?.permanent_url ?? "",
 			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
@@ -989,10 +999,10 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 	}
 
 	return new PlatformVideoDetails({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, config.id, PLATFORM_CLAIMTYPE),
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 			lbry.signing_channel.value.title ?? "",
 			lbry.signing_channel.permanent_url,
 			lbry.signing_channel.value?.thumbnail?.url ?? ""),
