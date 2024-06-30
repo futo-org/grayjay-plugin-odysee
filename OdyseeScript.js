@@ -42,7 +42,7 @@ source.enable = function (config, settings, savedState) {
         log(savedState)
     }
 	local_settings = settings
-	if (savedState === null) {
+	if (!savedState) {
 		if (bridge.isLoggedIn()) {
 			const response = http
 				.batch()
@@ -65,7 +65,7 @@ source.enable = function (config, settings, savedState) {
 			local_state = {
 				channelId: channelList.result.items[0].claim_id,
 				name: channelList.result.items[0].value.title,
-				thumbnail: channelList.result.items[0].value.thumbnail.url,
+				thumbnail: channelList.result.items[0].value?.thumbnail?.url,
 				url: channelList.result.items[0].permanent_url,
 				userId
 			}
@@ -1018,3 +1018,5 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		...source
 	});
 }
+
+console.log("LOADED");
