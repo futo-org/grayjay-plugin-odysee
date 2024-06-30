@@ -1,44 +1,109 @@
 const URL_CLAIM_SEARCH = "https://api.na-backend.odysee.com/api/v1/proxy?m=claim_search"
 const URL_RESOLVE = "https://api.na-backend.odysee.com/api/v1/proxy?m=resolve";
+const URL_PREFERENCES = "https://api.na-backend.odysee.com/api/v1/proxy?m=preference_get"
 const URL_CONTENT = "https://odysee.com/\$/api/content/v2/get";
 const URL_REACTIONS = "https://api.odysee.com/reaction/list";
 const URL_VIEW_COUNT = "https://api.odysee.com/file/view_count";
 const URL_USER_NEW = "https://api.odysee.com/user/new";
 const URL_COMMENTS_LIST = "https://comments.odysee.tv/api/v2?m=comment.List";
+const URL_CHANNEL_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=channel_list"
+const URL_COLLECTION_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=collection_list"
+const URL_STATUS = "https://api.na-backend.odysee.com/api/v2/status"
+const URL_REPORT_PLAYBACK = "https://watchman.na-backend.odysee.com/reports/playback"
 const URL_BASE = "https://odysee.com";
+const PLAYLIST_URL_BASE = "https://odysee.com/$/playlist/"
 
 const CLAIM_TYPE_STREAM = "stream";
 const ORDER_BY_RELEASETIME = "release_time";
-		
+
 const REGEX_DETAILS_URL = new RegExp("lbry://(.*?)#(.*)");
 const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/;
 const REGEX_CHANNEL_URL2 = /https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/;
+const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
+const REGEX_COLLECTION = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F-]+?)$/
+const REGEX_FAVORITES = /^https:\/\/odysee\.com\/\$\/playlist\/favorites$/
+const REGEX_WATCH_LATER = /^https:\/\/odysee\.com\/\$\/playlist\/watchlater$/
 
 const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
 
-var config = {};
+let local_state
+let local_settings
 
-//Source Methods
-source.enable = function(conf){
-	config = conf ?? {};
-	//log(config);
+//Source Method
+source.enable = function (config, settings, savedState) {
+	if (IS_TESTING) {
+        log("IS_TESTING true")
+        log("logging configuration")
+        log(config)
+        log("logging settings")
+        log(settings)
+        log("logging savedState")
+        log(savedState)
+    }
+	local_settings = settings
+	if (savedState === null) {
+		if (bridge.isLoggedIn()) {
+			const response = http
+				.batch()
+				.POST(
+					URL_CHANNEL_LIST,
+					JSON.stringify(
+						{ jsonrpc: "2.0", method: "channel_list", params: { page: 1, page_size: 99999, resolve: true }, id: 1719338082805 }
+					),
+					{},
+					true
+				)
+				.GET(
+					URL_STATUS,
+					{},
+					true
+				)
+				.execute()
+			const channelList = JSON.parse(response[0].body)
+			const userId = JSON.parse(response[1].body).user.id.toString()
+			local_state = {
+				channelId: channelList.result.items[0].claim_id,
+				name: channelList.result.items[0].value.title,
+				thumbnail: channelList.result.items[0].value.thumbnail.url,
+				url: channelList.result.items[0].permanent_url,
+				userId
+			}
+		} else {
+			const response = http.GET(
+				URL_USER_NEW,
+				{},
+				false
+			)
+
+			const userId = JSON.parse(response.body).data.id.toString()
+
+			local_state = {
+				userId
+			}
+		}
+	} else {
+		local_state = JSON.parse(savedState)
+	}
 }
-source.getHome = function() {
+source.saveState = function saveState() {
+	return JSON.stringify(local_state)
+}
+source.getHome = function () {
 	const contentData = getOdyseeContentData();
 	const featured = contentData.categories["PRIMARY_CONTENT"];
 	const query = {
 		channel_ids: featured.channelIds,
-        claim_type: featured.claimType,
-        order_by: ["trending_group", "trending_mixed"],
-        page: 1,
-        page_size: 20,
-        limit_claims_per_channel: 1
+		claim_type: featured.claimType,
+		order_by: ["trending_group", "trending_mixed"],
+		page: 1,
+		page_size: 20,
+		limit_claims_per_channel: 1
 	};
 	return getQueryPager(query);
 };
 
-source.searchSuggestions = function(query) {
+source.searchSuggestions = function (query) {
 	return [];
 };
 source.getSearchCapabilities = () => {
@@ -104,14 +169,14 @@ source.searchChannels = function (query) {
 };
 
 //Channel
-source.isChannelUrl = function(url) {
+source.isChannelUrl = function (url) {
 	return REGEX_CHANNEL_URL.test(url) || REGEX_CHANNEL_URL2.test(url);
 };
 source.getChannel = function (url) {
 	const urlMatch = REGEX_CHANNEL_URL2.exec(url);
 	if (urlMatch) {
 		url = "lbry://" + urlMatch[1];
-    }
+	}
 
 	let channels = resolveClaimsChannel([url]);
 	const channel = channels[0];
@@ -142,22 +207,28 @@ source.getChannelContents = function (url) {
 		order_by: [ORDER_BY_RELEASETIME]
 	});
 };
+source.getChannelPlaylists = function (url) {
+	const channelId = url.match(REGEX_CHANNEL_URL)[2]
+
+	// TODO load the first video of each playlist to grab thumbnails
+	return new ChannelPlaylistsPager(channelId, 1, 24)
+}
 
 source.getChannelTemplateByClaimMap = () => {
-    return {
-        //Odysee
-        3: {
+	return {
+		//Odysee
+		3: {
 			0: "lbry://{{CLAIMVALUE}}"
 			//Unused! 1: claim id
-        }
-    };
+		}
+	};
 };
 
 //Video
-source.isContentDetailsUrl = function(url) {
+source.isContentDetailsUrl = function (url) {
 	return REGEX_DETAILS_URL.test(url)
 };
-source.getContentDetails = function(url) {
+source.getContentDetails = function (url) {
 	return resolveClaimsVideoDetail([url])[0];
 };
 
@@ -173,6 +244,226 @@ source.getSubComments = function (comment) {
 
 	return getCommentsPager(comment.contextUrl, comment.context.claimId, 1, false, comment.context.commentId);
 }
+source.isPlaylistUrl = function (url) {
+	return REGEX_PLAYLIST.test(url) || REGEX_COLLECTION.test(url) || REGEX_FAVORITES.test(url) || REGEX_WATCH_LATER.test(url)
+}
+// TODO return a playlist thumbnail to show on the playlist import screen
+source.getPlaylist = function (url) {
+	if (REGEX_FAVORITES.test(url)) {
+		const response = loadPreferences()
+
+		const playlistId = "favorites"
+
+		const preferences = JSON.parse(response.body)
+
+		const playlist = preferences.result.shared.value.builtinCollections.favorites
+
+		return formatUserPlaylist(playlist, playlistId)
+	}
+	if (REGEX_WATCH_LATER.test(url)) {
+		const playlistId = "watchlater"
+
+		const response = loadPreferences()
+
+		const preferences = JSON.parse(response.body)
+
+		const playlist = preferences.result.shared.value.builtinCollections.watchlater
+
+		return formatUserPlaylist(playlist, playlistId)
+	}
+
+	const matchResult = url.match(REGEX_PLAYLIST)
+	if (matchResult === null) {
+		const playlistId = url.match(REGEX_COLLECTION)[1]
+
+		const response = loadPreferences()
+
+		const preferences = JSON.parse(response.body)
+
+		const playlist = preferences.result.shared.value.unpublishedCollections[playlistId]
+
+		return formatUserPlaylist(playlist, playlistId)
+	} else {
+		const playlistId = matchResult[1]
+
+		const response = http.POST(
+			URL_CLAIM_SEARCH,
+			JSON.stringify({ jsonrpc: "2.0", method: "claim_search", params: { include_is_my_output: true, claim_ids: [playlistId], page: 1, page_size: 1, no_totals: true }, id: 1719268918154 }),
+			{},
+			false
+		)
+		const playlistMetadata = JSON.parse(response.body).result.items[0]
+
+		return new PlatformPlaylistDetails({
+			id: new PlatformID(PLATFORM, playlistId, plugin.config.id, PLATFORM_CLAIMTYPE),
+			name: playlistMetadata.value.title,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, playlistMetadata.signing_channel.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+				playlistMetadata.signing_channel.value.title,
+				playlistMetadata.signing_channel.permanent_url,
+				playlistMetadata.signing_channel.value.thumbnail.url
+			),
+			datetime: playlistMetadata.meta.creation_timestamp,
+			url,
+			videoCount: playlistMetadata.value.claims.length,
+			contents: new VideoPager(resolveClaimsVideo2(playlistMetadata.value.claims), false)
+		})
+	}
+}
+function loadPreferences() {
+	return http.POST(
+		URL_PREFERENCES,
+		JSON.stringify({ jsonrpc: "2.0", method: "preference_get", params: { key: "shared" }, id: 1719254704333 }),
+		{},
+		true
+	)
+}
+function formatUserPlaylist(playlist, playlistId) {
+	return new PlatformPlaylistDetails({
+		id: new PlatformID(PLATFORM, playlistId, plugin.config.id, PLATFORM_CLAIMTYPE),
+		name: playlist.name,
+		author: new PlatformAuthorLink(
+			new PlatformID(PLATFORM, local_state.channelId, plugin.config.id, PLATFORM_CLAIMTYPE),
+			local_state.name,
+			local_state.url,
+			local_state.thumbnail
+		),
+		datetime: playlist.createdAt,
+		url: `${PLAYLIST_URL_BASE}${playlistId}`,
+		videoCount: playlist.itemCount,
+		contents: new VideoPager(resolveClaimsVideo(playlist.items), false)
+	})
+}
+// i don't think there is a way to search playlists on odysee
+// source.searchPlaylists = function (query) {
+
+// }
+source.getUserSubscriptions = function () {
+	const response = loadPreferences()
+	const preferences = JSON.parse(response.body)
+	return preferences.result.shared.value.subscriptions
+}
+source.getUserPlaylists = function () {
+	const response = loadPreferences()
+	const preferences = JSON.parse(response.body)
+	const collections = Object.keys(preferences.result.shared.value.unpublishedCollections)
+		.map(function (collectionId) {
+			return `${PLAYLIST_URL_BASE}${collectionId}`
+		})
+
+	const publicPlaylistsResponse = http.POST(
+		URL_COLLECTION_LIST,
+		JSON.stringify({ jsonrpc: "2.0", method: "collection_list", params: { resolve: true, page: 1, page_size: 200 }, id: 1719352987252 }),
+		{},
+		true
+	)
+	const playlists = JSON.parse(publicPlaylistsResponse.body).result.items.map(function (playlist) {
+		return `${PLAYLIST_URL_BASE}${playlist.claim_id}`
+	})
+
+	return [...collections, ...playlists, ...["https://odysee.com/$/playlist/watchlater", "https://odysee.com/$/playlist/favorites"]]
+}
+source.getPlaybackTracker = function (url) {
+	if (!local_settings.odyseeActivity) {
+        return null
+    }
+	return new OdyseePlaybackTracker(url)
+}
+class OdyseePlaybackTracker extends PlaybackTracker {
+	constructor(url) {
+		const intervalSeconds = 10
+		super(intervalSeconds * 1000)
+
+		const matchResult = url.match(REGEX_DETAILS_URL)
+		this.url = `${matchResult[1]}#${matchResult[2].slice(0, 1)}`
+
+		this.duration = resolveClaims([url])[0].value.video.duration * 1000
+
+		this.lastMessage = Date.now()
+	}
+	onInit(_seconds) {
+
+
+	}
+	onProgress(seconds, isPlaying) {
+		if (!isPlaying || seconds === 0) {
+			return
+		}
+		http.POST(
+			URL_REPORT_PLAYBACK,
+			JSON.stringify(
+				passthrough_log({
+					rebuf_count: 0,
+					rebuf_duration: 0,
+					url: this.url,
+					device: "web",
+					duration: Date.now() - this.lastMessage,
+					// hardcoded because there isn't a way in grayjay to know this value
+					protocol: "hls",
+					// not really sure what this means 
+					player: "use-p1",
+					user_id: local_state.userId,
+					position: seconds * 1000,
+					rel_position: Math.round(seconds * 1000 / this.duration * 100),
+					// hardcoded because there isn't a way in grayjay to know the quality playing
+					bitrate: 2890800
+				})
+			),
+			{},
+			false
+		)
+		this.lastMessage = Date.now()
+	}
+	onConcluded() {
+		http.POST(
+			URL_REPORT_PLAYBACK,
+			JSON.stringify(
+				passthrough_log({
+					rebuf_count: 0,
+					rebuf_duration: 0,
+					url: this.url,
+					device: "web",
+					duration: Date.now() - this.lastMessage,
+					// hardcoded because there isn't a way in grayjay to know this value
+					protocol: "hls",
+					// not really sure what this means 
+					player: "use-p1",
+					user_id: local_state.userId,
+					position: this.duration,
+					rel_position: 100,
+					// hardcoded because there isn't a way in grayjay to know the quality playing
+					bitrate: 2890800
+				})
+			),
+			{},
+			false
+		)
+		this.lastMessage = Date.now()
+		http.POST(
+			URL_REPORT_PLAYBACK,
+			JSON.stringify(
+				passthrough_log({
+					rebuf_count: 0,
+					rebuf_duration: 0,
+					url: this.url,
+					device: "web",
+					duration: Date.now() - this.lastMessage,
+					// hardcoded because there isn't a way in grayjay to know this value
+					protocol: "hls",
+					// not really sure what this means 
+					player: "use-p1",
+					user_id: local_state.userId,
+					position: this.duration,
+					rel_position: 100,
+					// hardcoded because there isn't a way in grayjay to know the quality playing
+					bitrate: 2890800
+				})
+			),
+			{},
+			false
+		)
+	}
+}
 
 function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) {
 	const body = JSON.stringify({
@@ -185,12 +476,12 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 			"page_size": 10,
 			"top_level": topLevel,
 			"sort_by": 3,
-			... (parentId ? { "parent_id": parentId } : { })
+			... (parentId ? { "parent_id": parentId } : {})
 		}
 	});
-	
+
 	const resp = http.POST(URL_COMMENTS_LIST, body, {
-		"Content-Type": "application/json" 
+		"Content-Type": "application/json"
 	});
 
 	if (!resp.isOk) {
@@ -212,7 +503,7 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 			page_size: 20
 		}
 	}), {
-		"Content-Type": "application/json" 
+		"Content-Type": "application/json"
 	});
 
 	const thumbnailMap = {};
@@ -230,7 +521,7 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 	const comments = result.result?.items?.map(i => {
 		const c = new Comment({
 			contextUrl: contextUrl,
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, i.channel_id, config.id, PLATFORM_CLAIMTYPE),
+			author: new PlatformAuthorLink(new PlatformID(PLATFORM, i.channel_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 				i.channel_name ?? "",
 				i.channel_url,
 				thumbnailMap[i.channel_id] ?? ""),
@@ -246,14 +537,14 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 	const hasMore = result.result.page < result.result.total_pages;
 	return new OdyseeCommentPager(comments, hasMore, { claimId, page, topLevel, parentId });
 }
-		
+
 //Internals
 function getOdyseeContentData() {
 	const resp = http.GET(URL_CONTENT, {});
-	if(!resp.isOk)
-	    throw new ScriptException("Failed request [" + URL_CONTENT + "] (" + resp.code + ")");
+	if (!resp.isOk)
+		throw new ScriptException("Failed request [" + URL_CONTENT + "] (" + resp.code + ")");
 	const contentResp = JSON.parse(resp.body);
-	
+
 	return contentResp.data["en"];
 }
 function getQueryPager(query) {
@@ -267,7 +558,7 @@ function getSearchPagerVideos(query, nsfw = false, maxRetry = 0, channelId = nul
 }
 function getSearchPagerChannels(query, nsfw = false) {
 	const pageSize = 10;
-	const results = searchAndResolveChannels(query, 0, pageSize, nsfw).map(x=>channelToAuthorLink(x));
+	const results = searchAndResolveChannels(query, 0, pageSize, nsfw).map(x => channelToAuthorLink(x));
 	return new SearchPagerChannels(query, results, pageSize, nsfw);
 }
 
@@ -280,10 +571,61 @@ class QueryPager extends VideoPager {
 	constructor(query, results) {
 		super(results, results.length >= query.page_size, query);
 	}
-	
+
 	nextPage() {
 		this.context.page = this.context.page + 1;
 		return getQueryPager(this.context);
+	}
+}
+function getPlaylists(channelId, nextPageToLoad, pageSize) {
+	const response = http.POST(
+		URL_CLAIM_SEARCH,
+		JSON.stringify(
+			{ jsonrpc: "2.0", method: "claim_search", params: { page_size: pageSize, page: nextPageToLoad, claim_type: ["collection"], no_totals: true, not_tags: ["porn", "porno", "nsfw", "mature", "xxx", "sex", "creampie", "blowjob", "handjob", "vagina", "boobs", "big boobs", "big dick", "pussy", "cumshot", "anal", "hard fucking", "ass", "fuck", "hentai", "__section__featured__"], order_by: ["release_time"], has_source: true, channel_ids: [channelId], release_time: `<${Date.now}` }, id: 1719272697105 }
+		),
+		{},
+		false
+	)
+
+	const playlists = JSON.parse(response.body)
+
+	const formattedPlaylists = playlists.result.items.map(function (playlist) {
+		return new PlatformPlaylist({
+			id: new PlatformID(PLATFORM, playlist.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+			name: playlist.value.title,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, playlist.signing_channel.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+				playlist.signing_channel.value.title,
+				playlist.signing_channel.permanent_url,
+				playlist.signing_channel.value.thumbnail.url
+			),
+			datetime: playlist.meta.creation_timestamp,
+			url: `${PLAYLIST_URL_BASE}${playlist.claim_id}`,
+			videoCount: playlist.value.claims.length,
+			// thumbnail: string
+		})
+	})
+	return formattedPlaylists
+}
+class ChannelPlaylistsPager extends PlaylistPager {
+	constructor(channelId, firstPage, pageSize) {
+		const formatted_playlists = getPlaylists(channelId, firstPage, pageSize)
+
+		// odysee doesn't tell us if there are more we just need to try and return none if there are none
+		super(formatted_playlists, formatted_playlists.length === pageSize)
+
+		this.channelId = channelId
+		this.nextPageToLoad = firstPage + 1
+		this.pageSize = pageSize
+	}
+	nextPage() {
+		const formatted_playlists = getPlaylists(this.channelId, this.nextPageToLoad, this.pageSize)
+
+		this.results = formatted_playlists
+		this.nextPageToLoad += 1
+		this.hasMore = formatted_playlists.length === this.pageSize
+
+		return this
 	}
 }
 class SearchPagerVideos extends VideoPager {
@@ -298,16 +640,16 @@ class SearchPagerVideos extends VideoPager {
 			timeFilter
 		});
 	}
-	
+
 	nextPage() {
 		this.context.page = this.context.page + 1;
 		const start = (this.context.page - 1) * this.context.page_size;
 		const end = (this.context.page) * this.context.page_size;
-		
+
 		this.results = searchAndResolveVideos(this.context.query, start, this.context.page_size, this.context.nsfw, 5, this.context.channelId, this.context.sortBy, this.context.timeFilter);
-		if(this.results.length == 0)
-		    this.hasMore = false;
-		
+		if (this.results.length == 0)
+			this.hasMore = false;
+
 		return this;
 	}
 }
@@ -327,9 +669,9 @@ class SearchPagerChannels extends ChannelPager {
 		const end = (this.context.page) * this.context.page_size;
 
 		this.results = searchAndResolveChannels(this.context.query, start, this.context.page_size, this.nsfw)
-		    .map(x=>channelToAuthorLink(x));
-		if(this.results.length == 0)
-		    this.hasMore = false;
+			.map(x => channelToAuthorLink(x));
+		if (this.results.length == 0)
+			this.hasMore = false;
 
 		return this;
 	}
@@ -347,22 +689,22 @@ class OdyseeCommentPager extends CommentPager {
 
 //Internal methods
 function searchAndResolveVideos(search, from, size, nsfw = false, maxRetry = 0, channelId = null, sortBy = null, timeFilter = null) {
-    const claimUrls = searchClaims(search, from, size, "file", nsfw, maxRetry, 0, channelId, sortBy, timeFilter);
-    return resolveClaimsVideo(claimUrls);
+	const claimUrls = searchClaims(search, from, size, "file", nsfw, maxRetry, 0, channelId, sortBy, timeFilter);
+	return resolveClaimsVideo(claimUrls);
 }
 function searchAndResolveChannels(search, from, size, nsfw = false) {
-    const claimUrls = searchClaims(search, from, size, "channel", nsfw);
-    return resolveClaimsChannel(claimUrls);
+	const claimUrls = searchClaims(search, from, size, "channel", nsfw);
+	return resolveClaimsChannel(claimUrls);
 }
 function searchClaims(search, from, size, type = "file", nsfw = false, maxRetry = 0, ittRetry = 0, channelId = null, sortBy = null, timeFilter = null) {
 	let url = "https://lighthouse.odysee.tv/search?s=" + encodeURIComponent(search) +
-            "&from=" + from + "&size=" + size + "&nsfw=" + nsfw;// + "&claimType=file&mediaType=video"
-			
-	if(type == "file")
-	    url += "&claimType=file&mediaType=video";
+		"&from=" + from + "&size=" + size + "&nsfw=" + nsfw;// + "&claimType=file&mediaType=video"
+
+	if (type == "file")
+		url += "&claimType=file&mediaType=video";
 	else
 		url += "&claimType=" + type;
-	
+
 	if (channelId) {
 		url += "&channel_id=" + channelId;
 	}
@@ -378,32 +720,32 @@ function searchClaims(search, from, size, type = "file", nsfw = false, maxRetry 
 	log(url);
 
 	const respSearch = http.GET(url, {});
-	
-	if(respSearch.code >= 300) {
-	    if(respSearch.body && respSearch.body.indexOf("1020") > 0) {
-	        if(ittRetry < maxRetry) {
-	            log("Retry searchClaims [" + ittRetry + "]");
-	            return searchClaims(search, from, size, type, nsfw, maxRetry, ittRetry + 1);
-	        }
-	        else {
-	            log("Retrying searchClaims failed after " + ittRetry + " attempts");
-	            return [];
-	        }
-	    }
 
-        if(respSearch.code == 408) {
-            log("Odysee failed with timeout after retries");
-            return [];
-        }
-        else
-		    throw new ScriptException("Failed to search with code " + respSearch.code + "\n" + respSearch.body);
-    }
-	if(respSearch.body == null || respSearch.body == "") {
+	if (respSearch.code >= 300) {
+		if (respSearch.body && respSearch.body.indexOf("1020") > 0) {
+			if (ittRetry < maxRetry) {
+				log("Retry searchClaims [" + ittRetry + "]");
+				return searchClaims(search, from, size, type, nsfw, maxRetry, ittRetry + 1);
+			}
+			else {
+				log("Retrying searchClaims failed after " + ittRetry + " attempts");
+				return [];
+			}
+		}
+
+		if (respSearch.code == 408) {
+			log("Odysee failed with timeout after retries");
+			return [];
+		}
+		else
+			throw new ScriptException("Failed to search with code " + respSearch.code + "\n" + respSearch.body);
+	}
+	if (respSearch.body == null || respSearch.body == "") {
 		throw new ScriptException("Failed to search with code " + respSearch.code + " due to empty body")
 	}
-	
+
 	const claims = JSON.parse(respSearch.body);
-	const claimUrls = claims.map(x=>x.name + "#" + x.claimId);
+	const claimUrls = claims.map(x => x.name + "#" + x.claimId);
 	return claimUrls;
 }
 
@@ -413,31 +755,37 @@ function claimSearch(query) {
 		params: query
 	});
 	const resp = http.POST(URL_CLAIM_SEARCH, body, {
-		"Content-Type": "application/json" 
+		"Content-Type": "application/json"
 	});
-	if(resp.code >= 300)
+	if (resp.code >= 300)
 		throw "Failed to search claims\n" + resp.body;
 	const result = JSON.parse(resp.body);
-	return result.result.items.map((x)=> lbryVideoToPlatformVideo(x));
+	return result.result.items.map((x) => lbryVideoToPlatformVideo(x));
 }
 
 function resolveClaimsChannel(claims) {
-    if(!claims || claims.length == 0)
-        return [];
+	if (!claims || claims.length == 0)
+		return [];
 	const results = resolveClaims(claims);
-	return results.map(x=>lbryChannelToPlatformChannel(x));
+	return results.map(x => lbryChannelToPlatformChannel(x));
 }
 function resolveClaimsVideo(claims) {
-    if(!claims || claims.length == 0)
-        return [];
+	if (!claims || claims.length == 0)
+		return [];
 	const results = resolveClaims(claims);
-	return results.map(x=>lbryVideoToPlatformVideo(x));
+	return results.map(x => lbryVideoToPlatformVideo(x));
+}
+function resolveClaimsVideo2(claims) {
+	if (!claims || claims.length == 0)
+		return [];
+	const results = resolveClaims2(claims);
+	return results.map(x => lbryVideoToPlatformVideo(x));
 }
 function resolveClaimsVideoDetail(claims) {
-    if(!claims || claims.length == 0)
-        return [];
+	if (!claims || claims.length == 0)
+		return [];
 	const results = resolveClaims(claims);
-	return results.map(x=>lbryVideoDetailToPlatformVideoDetails(x));
+	return results.map(x => lbryVideoDetailToPlatformVideoDetails(x));
 }
 function resolveClaims(claims) {
 	const body = JSON.stringify({
@@ -449,33 +797,50 @@ function resolveClaims(claims) {
 	const resp = http.POST(URL_RESOLVE, body, {
 		"Content-Type": "application/json"
 	});
-	if(resp.code >= 300)
+	if (resp.code >= 300)
 		throw "Failed to resolve claims\n" + resp.body;
 
 	const claimResults = JSON.parse(resp.body).result;
-	
+
 	const results = [];
-	for(let i = 0; i < claims.length; i++) {
+	for (let i = 0; i < claims.length; i++) {
 		const claim = claims[i];
-		if(claimResults[claim])
+		if (claimResults[claim])
 			results.push(claimResults[claim]);
 	}
-	console.log(results);
 	return results;
+}
+function resolveClaims2(claims) {
+	const body = JSON.stringify(
+		{ jsonrpc: "2.0", method: "claim_search", params: { claim_ids: claims, page: 1, page_size: claims.length, no_totals: true }, id: 1719330225903 }
+	)
+	const resp = http.POST(URL_RESOLVE, body, {
+		"Content-Type": "application/json"
+	});
+	if (resp.code >= 300)
+		throw "Failed to resolve claims\n" + resp.body;
+
+	const claimResults = JSON.parse(resp.body).result;
+
+	const results = [];
+	claimResults.items.forEach(function (claim) {
+		results[claims.indexOf(claim.claim_id)] = claim
+	})
+	return results
 }
 
 //Convert a channel to an AuthorLink
 function channelToAuthorLink(channel) {
-    return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, config.id, PLATFORM_CLAIMTYPE),
-           			channel.name,
-           			channel.url,
-           			channel.thumbnail ?? "");
+	return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, plugin.config.id, PLATFORM_CLAIMTYPE),
+		channel.name,
+		channel.url,
+		channel.thumbnail ?? "");
 }
 
 //Convert a LBRY Channel (claim) to a PlatformChannel
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
 	return new PlatformChannel({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id, PLATFORM_CLAIMTYPE),
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 		name: lbry.value?.title ?? "",
 		thumbnail: lbry.value?.thumbnail?.url ?? "",
 		banner: lbry.value?.cover?.url,
@@ -489,11 +854,11 @@ function lbryChannelToPlatformChannel(lbry, subs = 0) {
 //Convert a LBRY Video (claim) to a PlatformVideo
 function lbryVideoToPlatformVideo(lbry) {
 	return new PlatformVideo({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, config.id, PLATFORM_CLAIMTYPE), 
-			lbry.signing_channel?.value?.title ?? "", 
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+			lbry.signing_channel?.value?.title ?? "",
 			lbry.signing_channel?.permanent_url ?? "",
 			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
 		datetime: lbry.timestamp,
@@ -545,8 +910,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 
 		const downloadUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash.substring(0, 6)}.mp4`;
 		console.log("downloadUrl2", downloadUrl2);
-		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-10", ... headersToAdd });
-		log("downloadResponse2: " + JSON.stringify(downloadResponse2));
+		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-10", ...headersToAdd });
 		if (downloadResponse2.isOk) {
 			sources.push(new VideoUrlSource({
 				name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v6)",
@@ -561,7 +925,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			}));
 		} else {
 			const downloadUrl = `https://player.odycdn.com/api/v4/streams/free/${lbry.name}/${lbry.claim_id}/${sdHash.substring(0, 6)}`;
-			const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0", ... headersToAdd });
+			const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0", ...headersToAdd });
 			if (downloadResponse.isOk) {
 				sources.push(new VideoUrlSource({
 					name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v4)",
@@ -598,10 +962,10 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		};
 	}
 
-	if(IS_TESTING)
+	if (IS_TESTING)
 		console.log(lbry);
-			
-	let rating = null;	
+
+	let rating = null;
 	let viewCount = 0;
 	const newUserResp = http.GET(URL_USER_NEW, headersToAdd);
 	if (newUserResp && newUserResp.isOk) {
@@ -609,9 +973,9 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		if (newUserObj && newUserObj.success && newUserObj.data) {
 			const authToken = newUserObj.data.auth_token;
 			const reactionResp = http.POST(URL_REACTIONS, `auth_token=${authToken}&claim_ids=${lbry.claim_id}`, {
-				"Content-Type": "application/x-www-form-urlencoded" 
+				"Content-Type": "application/x-www-form-urlencoded"
 			});
-		
+
 			if (reactionResp && reactionResp.isOk) {
 				const reactionObj = JSON.parse(reactionResp.body);
 				if (reactionObj && reactionObj.success && reactionObj.data && reactionObj.data.others_reactions) {
@@ -623,9 +987,9 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			}
 
 			const viewCountResp = http.POST(URL_VIEW_COUNT, `auth_token=${authToken}&claim_id=${lbry.claim_id}`, {
-				"Content-Type": "application/x-www-form-urlencoded" 
+				"Content-Type": "application/x-www-form-urlencoded"
 			});
-		
+
 			if (viewCountResp && viewCountResp.isOk) {
 				const viewCountObj = JSON.parse(viewCountResp.body);
 				if (viewCountObj && viewCountObj.success && viewCountObj.data) {
@@ -634,13 +998,13 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			}
 		}
 	}
-	
+
 	return new PlatformVideoDetails({
-		id: new PlatformID(PLATFORM, lbry.claim_id, config.id),
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, config.id, PLATFORM_CLAIMTYPE), 
-			lbry.signing_channel.value.title ?? "", 
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+			lbry.signing_channel.value.title ?? "",
 			lbry.signing_channel.permanent_url,
 			lbry.signing_channel.value?.thumbnail?.url ?? ""),
 		datetime: lbry.timestamp,
@@ -651,8 +1015,6 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		isLive: false,
 		description: lbry.value?.description ?? "",
 		rating,
-		... source
+		...source
 	});
 }
-
-log("LOADED");
