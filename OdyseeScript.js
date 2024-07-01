@@ -27,21 +27,23 @@ const REGEX_WATCH_LATER = /^https:\/\/odysee\.com\/\$\/playlist\/watchlater$/
 const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
 
-let local_state
-let local_settings
+const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "")
+
+let localState
+let localSettings
 
 //Source Method
 source.enable = function (config, settings, savedState) {
 	if (IS_TESTING) {
-        log("IS_TESTING true")
-        log("logging configuration")
-        log(config)
-        log("logging settings")
-        log(settings)
-        log("logging savedState")
-        log(savedState)
-    }
-	local_settings = settings
+		log("IS_TESTING true")
+		log("logging configuration")
+		log(config)
+		log("logging settings")
+		log(settings)
+		log("logging savedState")
+		log(savedState)
+	}
+	localSettings = settings
 	if (!savedState) {
 		if (bridge.isLoggedIn()) {
 			const response = http
@@ -62,11 +64,14 @@ source.enable = function (config, settings, savedState) {
 				.execute()
 			const channelList = JSON.parse(response[0].body)
 			const userId = JSON.parse(response[1].body).user.id.toString()
-			local_state = {
+			const channel = channelList.result.items.length === 0 ? undefined : {
 				channelId: channelList.result.items[0].claim_id,
 				name: channelList.result.items[0].value.title,
 				thumbnail: channelList.result.items[0].value?.thumbnail?.url,
 				url: channelList.result.items[0].permanent_url,
+			}
+			localState = {
+				channel,
 				userId
 			}
 		} else {
@@ -78,16 +83,16 @@ source.enable = function (config, settings, savedState) {
 
 			const userId = JSON.parse(response.body).data.id.toString()
 
-			local_state = {
+			localState = {
 				userId
 			}
 		}
 	} else {
-		local_state = JSON.parse(savedState)
+		localState = JSON.parse(savedState)
 	}
 }
 source.saveState = function saveState() {
-	return JSON.stringify(local_state)
+	return JSON.stringify(localState)
 }
 source.getHome = function () {
 	const contentData = getOdyseeContentData();
@@ -322,11 +327,11 @@ function formatUserPlaylist(playlist, playlistId) {
 	return new PlatformPlaylistDetails({
 		id: new PlatformID(PLATFORM, playlistId, plugin.config.id, PLATFORM_CLAIMTYPE),
 		name: playlist.name,
-		author: new PlatformAuthorLink(
-			new PlatformID(PLATFORM, local_state.channelId, plugin.config.id, PLATFORM_CLAIMTYPE),
-			local_state.name,
-			local_state.url,
-			local_state.thumbnail
+		author: localState.channel === undefined ? EMPTY_AUTHOR : new PlatformAuthorLink(
+			new PlatformID(PLATFORM, localState.channel.channelId, plugin.config.id, PLATFORM_CLAIMTYPE),
+			localState.channel.name,
+			localState.channel.url,
+			localState.channel.thumbnail
 		),
 		datetime: playlist.createdAt,
 		url: `${PLAYLIST_URL_BASE}${playlistId}`,
@@ -364,9 +369,9 @@ source.getUserPlaylists = function () {
 	return [...collections, ...playlists, ...["https://odysee.com/$/playlist/watchlater", "https://odysee.com/$/playlist/favorites"]]
 }
 source.getPlaybackTracker = function (url) {
-	if (!local_settings.odyseeActivity) {
-        return null
-    }
+	if (!localSettings.odyseeActivity) {
+		return null
+	}
 	return new OdyseePlaybackTracker(url)
 }
 class OdyseePlaybackTracker extends PlaybackTracker {
@@ -402,7 +407,7 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 					protocol: "hls",
 					// not really sure what this means 
 					player: "use-p1",
-					user_id: local_state.userId,
+					user_id: localState.userId,
 					position: seconds * 1000,
 					rel_position: Math.round(seconds * 1000 / this.duration * 100),
 					// hardcoded because there isn't a way in grayjay to know the quality playing
@@ -428,7 +433,7 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 					protocol: "hls",
 					// not really sure what this means 
 					player: "use-p1",
-					user_id: local_state.userId,
+					user_id: localState.userId,
 					position: this.duration,
 					rel_position: 100,
 					// hardcoded because there isn't a way in grayjay to know the quality playing
@@ -452,7 +457,7 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 					protocol: "hls",
 					// not really sure what this means 
 					player: "use-p1",
-					user_id: local_state.userId,
+					user_id: localState.userId,
 					position: this.duration,
 					rel_position: 100,
 					// hardcoded because there isn't a way in grayjay to know the quality playing
