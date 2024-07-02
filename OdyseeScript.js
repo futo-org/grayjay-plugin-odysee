@@ -136,7 +136,7 @@ source.search = function (query, type, order, filters) {
 		date = filters["date"][0];
 	}
 
-	return getSearchPagerVideos(query, false, 0, null, sort, date);
+	return getSearchPagerVideos(query, false, 4, null, sort, date);
 };
 source.getSearchChannelContentsCapabilities = function () {
 	return {
@@ -158,10 +158,10 @@ source.searchChannelContents = function (channelUrl, query, type, order, filters
 	if (!channelId) {
 		const curl = `${URL_BASE}/${urlMatch[1]}`;
 		const c = source.getChannel(curl);
-		return getSearchPagerVideos(query, false, 0, c.id.value);
+		return getSearchPagerVideos(query, false, 4, c.id.value);
 	}
 
-	return getSearchPagerVideos(query, false, 0, channelId);
+	return getSearchPagerVideos(query, false, 4, channelId);
 };
 
 source.searchChannels = function (query) {
@@ -693,7 +693,7 @@ function searchAndResolveVideos(search, from, size, nsfw = false, maxRetry = 0, 
 	return resolveClaimsVideo(claimUrls);
 }
 function searchAndResolveChannels(search, from, size, nsfw = false) {
-	const claimUrls = searchClaims(search, from, size, "channel", nsfw);
+	const claimUrls = searchClaims(search, from, size, "channel", nsfw, 4);
 	return resolveClaimsChannel(claimUrls);
 }
 function searchClaims(search, from, size, type = "file", nsfw = false, maxRetry = 0, ittRetry = 0, channelId = null, sortBy = null, timeFilter = null) {
@@ -722,7 +722,7 @@ function searchClaims(search, from, size, type = "file", nsfw = false, maxRetry 
 	const respSearch = http.GET(url, {});
 
 	if (respSearch.code >= 300) {
-		if (respSearch.body && respSearch.body.indexOf("1020") > 0) {
+		if (respSearch.code == 502 || (respSearch.body && respSearch.body.indexOf("1020") > 0)) {
 			if (ittRetry < maxRetry) {
 				log("Retry searchClaims [" + ittRetry + "]");
 				return searchClaims(search, from, size, type, nsfw, maxRetry, ittRetry + 1);
