@@ -29,6 +29,30 @@ const PLATFORM_CLAIMTYPE = 3;
 
 const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "")
 
+/** From https://github.com/OdyseeTeam/odysee-frontend/blob/master/ui/constants/tags.js */
+const MATURE_TAGS = [
+	"porn",
+	"porno",
+	"nsfw",
+	"mature",
+	"xxx",
+	"sex",
+	"creampie",
+	"blowjob",
+	"handjob",
+	"vagina",
+	"boobs",
+	"big boobs",
+	"big dick",
+	"pussy",
+	"cumshot",
+	"anal",
+	"hard fucking",
+	"ass",
+	"fuck",
+	"hentai",
+]
+
 let localState
 let localSettings
 
@@ -101,6 +125,7 @@ source.getHome = function () {
 		channel_ids: featured.channelIds,
 		claim_type: featured.claimType,
 		order_by: ["trending_group", "trending_mixed"],
+		not_tags: MATURE_TAGS,
 		page: 1,
 		page_size: 20,
 		limit_claims_per_channel: 1
@@ -208,6 +233,7 @@ source.getChannelContents = function (url) {
 		channel_ids: [channelId],
 		page: 1,
 		page_size: 8,
+		not_tags: MATURE_TAGS,
 		claim_type: [CLAIM_TYPE_STREAM],
 		order_by: [ORDER_BY_RELEASETIME]
 	});
@@ -586,7 +612,22 @@ function getPlaylists(channelId, nextPageToLoad, pageSize) {
 	const response = http.POST(
 		URL_CLAIM_SEARCH,
 		JSON.stringify(
-			{ jsonrpc: "2.0", method: "claim_search", params: { page_size: pageSize, page: nextPageToLoad, claim_type: ["collection"], no_totals: true, not_tags: ["porn", "porno", "nsfw", "mature", "xxx", "sex", "creampie", "blowjob", "handjob", "vagina", "boobs", "big boobs", "big dick", "pussy", "cumshot", "anal", "hard fucking", "ass", "fuck", "hentai", "__section__featured__"], order_by: ["release_time"], has_source: true, channel_ids: [channelId], release_time: `<${Date.now}` }, id: 1719272697105 }
+			{
+				jsonrpc: "2.0",
+				method: "claim_search",
+				params: {
+					page_size: pageSize,
+					page: nextPageToLoad,
+					claim_type: ["collection"],
+					no_totals: true,
+					not_tags: MATURE_TAGS,
+					order_by: ["release_time"],
+					has_source: true,
+					channel_ids: [channelId],
+					release_time: `<${Date.now}`
+				},
+				id: 1719272697105
+			}
 		),
 		{},
 		false
@@ -790,6 +831,13 @@ function resolveClaimsVideoDetail(claims) {
 	if (!claims || claims.length == 0)
 		return [];
 	const results = resolveClaims(claims);
+	results.forEach((result => {
+		result.value.tags.forEach((tag) => {
+			if (MATURE_TAGS.includes(tag)) {
+				throw new AgeException("Mature content is not supported on Odysee");
+			}
+		})
+	}))
 	return results.map(x => lbryVideoDetailToPlatformVideoDetails(x));
 }
 function resolveClaims(claims) {
