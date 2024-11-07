@@ -125,12 +125,11 @@ source.getHome = function () {
 		channel_ids: featured.channelIds,
 		claim_type: featured.claimType,
 		order_by: ["trending_group", "trending_mixed"],
-		not_tags: MATURE_TAGS,
 		page: 1,
 		page_size: 20,
 		limit_claims_per_channel: 1
 	};
-	return getQueryPager(query);
+	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
 };
 
 source.searchSuggestions = function (query) {
@@ -229,14 +228,15 @@ source.getChannelContents = function (url) {
 		channelId = c.id.value;
 	}
 
-	return getQueryPager({
+	const query = {
 		channel_ids: [channelId],
 		page: 1,
 		page_size: 8,
-		not_tags: MATURE_TAGS,
 		claim_type: [CLAIM_TYPE_STREAM],
 		order_by: [ORDER_BY_RELEASETIME]
-	});
+	}
+
+	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
 };
 source.getChannelPlaylists = function (url) {
 	const channelId = url.match(REGEX_CHANNEL_URL)[2]
@@ -609,23 +609,24 @@ class QueryPager extends VideoPager {
 	}
 }
 function getPlaylists(channelId, nextPageToLoad, pageSize) {
+	const params = {
+		page_size: pageSize,
+		page: nextPageToLoad,
+		claim_type: ["collection"],
+		no_totals: true,
+		order_by: ["release_time"],
+		has_source: true,
+		channel_ids: [channelId],
+		release_time: `<${Date.now}`
+	}
+
 	const response = http.POST(
 		URL_CLAIM_SEARCH,
 		JSON.stringify(
 			{
 				jsonrpc: "2.0",
 				method: "claim_search",
-				params: {
-					page_size: pageSize,
-					page: nextPageToLoad,
-					claim_type: ["collection"],
-					no_totals: true,
-					not_tags: MATURE_TAGS,
-					order_by: ["release_time"],
-					has_source: true,
-					channel_ids: [channelId],
-					release_time: `<${Date.now}`
-				},
+				params: localSettings.allowMatureContent ? params : { ...params, not_tags: MATURE_TAGS },
 				id: 1719272697105
 			}
 		),
@@ -831,13 +832,15 @@ function resolveClaimsVideoDetail(claims) {
 	if (!claims || claims.length == 0)
 		return [];
 	const results = resolveClaims(claims);
-	results.forEach((result => {
-		result.value.tags.forEach((tag) => {
-			if (MATURE_TAGS.includes(tag)) {
-				throw new AgeException("Mature content is not supported on Odysee");
-			}
-		})
-	}))
+	if (!localSettings.allowMatureContent) {
+		results.forEach((result => {
+			result.value.tags.forEach((tag) => {
+				if (MATURE_TAGS.includes(tag)) {
+					throw new AgeException("Mature content is not supported on Odysee");
+				}
+			})
+		}))
+	}
 	return results.map(x => lbryVideoDetailToPlatformVideoDetails(x));
 }
 function resolveClaims(claims) {

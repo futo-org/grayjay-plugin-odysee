@@ -12,7 +12,9 @@
 	"id": "1c05bfc3-08b9-42d0-93d3-6d52e0fd34d8",
 	"scriptSignature": "",
 	"scriptPublicKey": "",
-	"packages": ["Http"],
+	"packages": [
+		"Http"
+	],
 	"allowEval": false,
 	"allowUrls": [
 		"api.na-backend.odysee.com",
@@ -24,21 +26,32 @@
 		"comments.odysee.tv",
 		"watchman.na-backend.odysee.com"
 	],
-	"supportedClaimTypes": [3],
+	"supportedClaimTypes": [
+		3
+	],
 	"authentication": {
 		"loginUrl": "https://odysee.com/$/signin",
 		"userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
 		"domainHeadersToFind": {
-			"api.na-backend.odysee.com": ["X-Lbry-Auth-Token"]
+			"api.na-backend.odysee.com": [
+				"X-Lbry-Auth-Token"
+			]
 		}
 	},
 	"settings": [
-        {
-            "variable": "odyseeActivity",
-            "name": "Provide Odysee Activity",
-            "description": "Tell Odysee what you played.",
-            "type": "Boolean",
-            "default": "false"
-        }
-    ]
+		{
+			"variable": "allowMatureContent",
+			"name": "Allow Mature Content",
+			"description": "Allow watching of mature content",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "odyseeActivity",
+			"name": "Provide Odysee Activity",
+			"description": "Tell Odysee what you played",
+			"type": "Boolean",
+			"default": "false"
+		}
+	]
 }
