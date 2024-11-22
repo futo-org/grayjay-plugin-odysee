@@ -29,30 +29,6 @@ const PLATFORM_CLAIMTYPE = 3;
 
 const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "")
 
-/** From https://github.com/OdyseeTeam/odysee-frontend/blob/master/ui/constants/tags.js */
-const MATURE_TAGS = [
-	"porn",
-	"porno",
-	"nsfw",
-	"mature",
-	"xxx",
-	"sex",
-	"creampie",
-	"blowjob",
-	"handjob",
-	"vagina",
-	"boobs",
-	"big boobs",
-	"big dick",
-	"pussy",
-	"cumshot",
-	"anal",
-	"hard fucking",
-	"ass",
-	"fuck",
-	"hentai",
-]
-
 let localState
 let localSettings
 
@@ -833,8 +809,8 @@ function resolveClaimsVideoDetail(claims) {
 		return [];
 	const results = resolveClaims(claims);
 	if (!localSettings.allowMatureContent) {
-		results.forEach((result => {
-			result.value.tags.forEach((tag) => {
+		results?.forEach((result => {
+			result.value?.tags?.forEach((tag) => {
 				if (MATURE_TAGS.includes(tag)) {
 					throw new AgeException("Mature content is not supported on Odysee");
 				}
@@ -1074,5 +1050,30 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		...source
 	});
 }
+
+
+/** From https://github.com/OdyseeTeam/odysee-frontend/blob/master/ui/constants/tags.js */
+const MATURE_TAGS = [
+	"porn",
+	"porno",
+	"nsfw",
+	"mature",
+	"xxx",
+	"sex",
+	"creampie",
+	"blowjob",
+	"handjob",
+	"vagina",
+	"boobs",
+	"big boobs",
+	"big dick",
+	"pussy",
+	"cumshot",
+	"anal",
+	"hard fucking",
+	"ass",
+	"fuck",
+	"hentai",
+]
 
 console.log("LOADED");
