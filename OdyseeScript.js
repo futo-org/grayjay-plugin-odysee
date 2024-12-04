@@ -17,8 +17,9 @@ const CLAIM_TYPE_STREAM = "stream";
 const ORDER_BY_RELEASETIME = "release_time";
 
 const REGEX_DETAILS_URL = new RegExp("lbry://(.*?)#(.*)");
-const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/;
-const REGEX_CHANNEL_URL2 = /https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/;
+const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/@([0-9a-zA-Z]+):[0-9a-fA-F]\/([,-_0-9a-zA-Z]+):[0-9a-fA-F]$/
+const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/
+const REGEX_CHANNEL_URL2 = /^https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?$/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
 const REGEX_COLLECTION = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F-]+?)$/
 const REGEX_FAVORITES = /^https:\/\/odysee\.com\/\$\/playlist\/favorites$/
@@ -233,10 +234,15 @@ source.getChannelTemplateByClaimMap = () => {
 
 //Video
 source.isContentDetailsUrl = function (url) {
-	return REGEX_DETAILS_URL.test(url)
+	return REGEX_DETAILS_URL.test(url) || ODYSEE_DETAILS_URL.test(url)
 };
 source.getContentDetails = function (url) {
-	return resolveClaimsVideoDetail([url])[0];
+	let slug = url.match(REGEX_DETAILS_URL)?.[1]
+	if (slug === undefined) {
+		slug = url.match(ODYSEE_DETAILS_URL)[2]
+	}
+	const claim = `lbry://${slug}`
+	return resolveClaimsVideoDetail([claim])[0];
 };
 
 source.getComments = function (url) {
@@ -893,13 +899,16 @@ function lbryVideoToPlatformVideo(lbry) {
 			lbry.signing_channel?.value?.title ?? "",
 			lbry.signing_channel?.permanent_url ?? "",
 			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
-		datetime: lbry.timestamp,
+		datetime: parseInt(lbry.value.release_time),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount: -1,
 		url: lbry.permanent_url,
-		shareUrl: lbry.permanent_url.replace("lbry://", URL_BASE + "/"),
+		shareUrl: format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id),
 		isLive: false
 	});
+}
+function format_odysee_share_url(channel_name, channel_claim_id, video_name, video_claim_id) {
+	return `${URL_BASE}/${channel_name}:${channel_claim_id.slice(0, 1)}/${video_name}:${video_claim_id.slice(0, 1)}`
 }
 //Convert a LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
@@ -973,6 +982,10 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			}
 		}
 
+		if (sources.length === 0){
+			throw new UnavailableException("Members Only Content Is Not Currently Supported")
+		}
+
 		source = {
 			video: new VideoSourceDescriptor(sources)
 		};
@@ -1039,11 +1052,11 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			lbry.signing_channel.value.title ?? "",
 			lbry.signing_channel.permanent_url,
 			lbry.signing_channel.value?.thumbnail?.url ?? ""),
-		datetime: lbry.timestamp,
+		datetime: parseInt(lbry.value.release_time),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount,
 		url: lbry.permanent_url,
-		shareUrl: lbry.permanent_url.replace("lbry://", URL_BASE + "/"),
+		shareUrl: format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id),
 		isLive: false,
 		description: lbry.value?.description ?? "",
 		rating,

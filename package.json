@@ -2,16 +2,8 @@
     "name": "grayjay-odysee-plugin",
     "version": "1.0.0",
     "description": "Odysee with type help",
-    "engines": {
-        "node": ">=20.0.0"
-    },
-    "module": "OdyseeScript.js",
-    "scripts": {
-        "bun-release": "bun install && bun update && bun x npm-check-updates",
-        "npm-release": "npm install && npm update && npx npm-check-updates",
-        "bun-dev": "bun x http-server .",
-        "npm-dev": "npx http-server ."
-    },
+    "homepage": "https://gitlab.futo.org/videostreaming/plugins/odysee",
+    "type": "module",
     "repository": {
         "type": "git",
         "url": "git+https://gitlab.futo.org/videostreaming/plugins/odysee.git"
@@ -25,11 +17,19 @@
     "bugs": {
         "url": "https://gitlab.futo.org/videostreaming/plugins/odysee/issues"
     },
-    "homepage": "https://gitlab.futo.org/videostreaming/plugins/odysee",
-    "type": "module",
+    "dependencies": {},
     "devDependencies": {
-        "@grayjay/plugin": "gitlab:kaidelorenzo/grayjay-plugin-types#2810fd1ed67de7ec62f9d148bdc94f6830a2e369",
-        "http-server": "^14.1.1",
-        "npm-check-updates": "^16.14.20"
+        "@types/node": "^22.10.1",
+        "@eslint/js": "^9.16.0",
+        "@types/eslint__js": "^8.42.3",
+        "eslint": "^9.16.0",
+        "typescript": "^5.7.2",
+        "typescript-eslint": "^8.17.0",
+        "@types/grayjay-source": "gitlab:kaidelorenzo/grayjay-plugin-types#c750f680835bb47bfff90466acaa697920a2a82a"
+    },
+    "scripts": {
+        "build": "tsc",
+        "lint": "npx eslint .",
+        "dev": "node src/utilities/server.js"
     }
 }
