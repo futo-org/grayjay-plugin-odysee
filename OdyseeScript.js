@@ -17,7 +17,7 @@ const CLAIM_TYPE_STREAM = "stream";
 const ORDER_BY_RELEASETIME = "release_time";
 
 const REGEX_DETAILS_URL = new RegExp("lbry://(.*?)#(.*)");
-const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/@([0-9a-zA-Z]+):[0-9a-fA-F]\/([!,-_0-9a-zA-Z]+):([0-9a-fA-F])$/
+const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/@([_0-9a-zA-Z]+):[0-9a-fA-F]\/([!,-_0-9a-zA-Z]+):([0-9a-fA-F])$/
 const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/
 const REGEX_CHANNEL_URL2 = /^https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?$/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
@@ -893,6 +893,10 @@ function lbryChannelToPlatformChannel(lbry, subs = 0) {
 
 //Convert a LBRY Video (claim) to a PlatformVideo
 function lbryVideoToPlatformVideo(lbry) {
+	const shareUrl = lbry.signing_channel !== undefined
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
+
 	return new PlatformVideo({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
@@ -905,9 +909,12 @@ function lbryVideoToPlatformVideo(lbry) {
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount: -1,
 		url: lbry.permanent_url,
-		shareUrl: format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id),
+		shareUrl,
 		isLive: false
 	});
+}
+function format_odysee_share_url_anonymous(video_name, video_claim_id) {
+	return `${URL_BASE}/${video_name}:${video_claim_id.slice(0, 1)}`
 }
 function format_odysee_share_url(channel_name, channel_claim_id, video_name, video_claim_id) {
 	return `${URL_BASE}/${channel_name}:${channel_claim_id.slice(0, 1)}/${video_name}:${video_claim_id.slice(0, 1)}`
@@ -916,7 +923,11 @@ function format_odysee_share_url(channel_name, channel_claim_id, video_name, vid
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
 	const headersToAdd = {
 		"Origin": "https://odysee.com"
-	};
+	}
+
+	if (lbry.value?.video === undefined) {
+		throw new UnavailableException("Odysee live streams are not currently supported")
+	}
 
 	const sdHash = lbry.value?.source?.sd_hash;
 	let source = null;
@@ -984,7 +995,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			}
 		}
 
-		if (sources.length === 0){
+		if (sources.length === 0) {
 			throw new UnavailableException("Members Only Content Is Not Currently Supported")
 		}
 
@@ -1046,19 +1057,23 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		}
 	}
 
+	const shareUrl = lbry.signing_channel !== undefined
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
+
 	return new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel.value.title ?? "",
-			lbry.signing_channel.permanent_url,
-			lbry.signing_channel.value?.thumbnail?.url ?? ""),
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+			lbry.signing_channel?.value.title ?? "",
+			lbry.signing_channel?.permanent_url,
+			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
 		datetime: parseInt(lbry.value.release_time),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount,
 		url: lbry.permanent_url,
-		shareUrl: format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id),
+		shareUrl,
 		isLive: false,
 		description: lbry.value?.description ?? "",
 		rating,
