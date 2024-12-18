@@ -17,7 +17,7 @@ const CLAIM_TYPE_STREAM = "stream";
 const ORDER_BY_RELEASETIME = "release_time";
 
 const REGEX_DETAILS_URL = new RegExp("lbry://(.*?)#(.*)");
-const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/@([_0-9a-zA-Z]+):[0-9a-fA-F]\/([!,-_0-9a-zA-Z]+):([0-9a-fA-F])$/
+const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/@([._0-9a-zA-Z]+):[0-9a-fA-F]\/([!,-_0-9a-zA-Z]+):([0-9a-fA-F])$/
 const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/
 const REGEX_CHANNEL_URL2 = /^https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?$/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
