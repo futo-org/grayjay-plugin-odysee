@@ -17,7 +17,8 @@ const CLAIM_TYPE_STREAM = "stream";
 const ORDER_BY_RELEASETIME = "release_time";
 
 const REGEX_DETAILS_URL = new RegExp("lbry://(.*?)#(.*)");
-const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/@([._0-9a-zA-Z]+):[0-9a-fA-F]\/([!,'-_0-9a-zA-Z]+):([0-9a-fA-F])$/
+const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/(@([._0-9a-zA-Z]+):[0-9a-fA-F]\/)+([!,'-_0-9a-zA-Z]+):([0-9a-fA-F])$/
+const OTHER_ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/([%!,'-_0-9a-zA-Z]+)(#|:)([0-9a-f]+)$/
 const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/
 const REGEX_CHANNEL_URL2 = /^https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?$/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
@@ -234,14 +235,18 @@ source.getChannelTemplateByClaimMap = () => {
 
 //Video
 source.isContentDetailsUrl = function (url) {
-	return REGEX_DETAILS_URL.test(url) || ODYSEE_DETAILS_URL.test(url)
+	return REGEX_DETAILS_URL.test(url) || ODYSEE_DETAILS_URL.test(url) || OTHER_ODYSEE_DETAILS_URL.test(url)
 };
 source.getContentDetails = function (url) {
 	let slug = url.match(REGEX_DETAILS_URL)?.[1]
 	let id = url.match(REGEX_DETAILS_URL)?.[2]
 	if (slug === undefined || id === undefined) {
-		slug = url.match(ODYSEE_DETAILS_URL)[2]
-		id = url.match(ODYSEE_DETAILS_URL)[3]
+		slug = url.match(ODYSEE_DETAILS_URL)?.[2]
+		id = url.match(ODYSEE_DETAILS_URL)?.[3]
+	}
+	if (slug === undefined || id === undefined) {
+		slug = url.match(OTHER_ODYSEE_DETAILS_URL)[1]
+		id = url.match(OTHER_ODYSEE_DETAILS_URL)[3]
 	}
 	const claim = `lbry://${slug}#${id}`
 	return resolveClaimsVideoDetail([claim])[0];
