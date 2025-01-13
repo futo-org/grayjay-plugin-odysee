@@ -1,9 +1,16 @@
 stages:
-- deploy
+  - deploy
 
-deploy:
+deploy-master:
   stage: deploy
   script:
     - sh deploy.sh
   only:
     - master
+
+deploy-dev:
+  stage: deploy
+  script:
+    - sh deploy.sh --pre-release
+  only:
+    - dev

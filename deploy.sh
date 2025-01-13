@@ -1,5 +1,26 @@
 #!/bin/sh
 DOCUMENT_ROOT=/var/www/sources
+PRE_RELEASE=false  # Default to false if --pre-release is not provided
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pre-release)
+      PRE_RELEASE=true  # Set to true if --pre-release is passed
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+# Determine deployment directory
+if [ "$PRE_RELEASE" = "true" ]; then
+    DEPLOY_DIR="$DOCUMENT_ROOT/Odysee/pre-release"
+else
+    DEPLOY_DIR="$DOCUMENT_ROOT/Odysee"
+fi
 
 # Take site offline
 echo "Taking site offline..."
@@ -7,11 +28,11 @@ touch $DOCUMENT_ROOT/maintenance.file
 
 # Swap over the content
 echo "Deploying content..."
-mkdir -p $DOCUMENT_ROOT/Odysee
-cp OdyseeIcon.png $DOCUMENT_ROOT/Odysee
-cp OdyseeConfig.json $DOCUMENT_ROOT/Odysee
-cp OdyseeScript.js $DOCUMENT_ROOT/Odysee
-sh sign.sh $DOCUMENT_ROOT/Odysee/OdyseeScript.js $DOCUMENT_ROOT/Odysee/OdyseeConfig.json
+mkdir -p "$DEPLOY_DIR"
+cp OdyseeIcon.png "$DEPLOY_DIR"
+cp OdyseeConfig.json "$DEPLOY_DIR"
+cp OdyseeScript.js "$DEPLOY_DIR"
+sh sign.sh "$DEPLOY_DIR/OdyseeScript.js" "$DEPLOY_DIR/OdyseeConfig.json"
 
 # Notify Cloudflare to wipe the CDN cache
 echo "Purging Cloudflare cache for zone $CLOUDFLARE_ZONE_ID..."
