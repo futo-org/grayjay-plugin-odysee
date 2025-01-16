@@ -11,6 +11,7 @@ const URL_COLLECTION_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=co
 const URL_STATUS = "https://api.na-backend.odysee.com/api/v2/status"
 const URL_REPORT_PLAYBACK = "https://watchman.na-backend.odysee.com/reports/playback"
 const URL_BASE = "https://odysee.com";
+const URL_API_SUB_COUNT = 'https://api.odysee.com/subscription/sub_count';
 const PLAYLIST_URL_BASE = "https://odysee.com/$/playlist/"
 
 const CLAIM_TYPE_STREAM = "stream";
@@ -31,7 +32,7 @@ const PLATFORM_CLAIMTYPE = 3;
 
 const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "")
 
-let localState
+let localState = {};
 let localSettings
 
 //Source Method
@@ -72,22 +73,21 @@ source.enable = function (config, settings, savedState) {
 				thumbnail: channelList.result.items[0].value?.thumbnail?.url,
 				url: channelList.result.items[0].permanent_url,
 			}
+
+			const { auth_token } = getAuthInfo();
+
 			localState = {
 				channel,
-				userId
+				userId,
+				auth_token
 			}
+			
 		} else {
-			const response = http.GET(
-				URL_USER_NEW,
-				{},
-				false
-			)
 
-			const userId = JSON.parse(response.body).data.id.toString()
-
-			localState = {
-				userId
-			}
+			const {userId, auth_token} = getAuthInfo();
+			localState.auth_token = auth_token;
+			localState.userId = userId;
+				
 		}
 	} else {
 		localState = JSON.parse(savedState)
@@ -185,9 +185,7 @@ source.getChannel = function (url) {
 		url = "lbry://" + urlMatch[1];
 	}
 
-	let channels = resolveClaimsChannel([url]);
-	const channel = channels[0];
-	channel.subscribers = getChannelSubCount(channel.url);
+	let [channel] = resolveClaimsChannel([url]);
 	return channel;
 };
 source.getChannelContents = function (url) {
@@ -578,13 +576,10 @@ function getSearchPagerVideos(query, nsfw = false, maxRetry = 0, channelId = nul
 }
 function getSearchPagerChannels(query, nsfw = false) {
 	const pageSize = 10;
-	const results = searchAndResolveChannels(query, 0, pageSize, nsfw).map(x => channelToAuthorLink(x));
+	const results = searchAndResolveChannels(query, 0, pageSize, nsfw);
 	return new SearchPagerChannels(query, results, pageSize, nsfw);
 }
 
-function getChannelSubCount(url) {
-	return 0;
-}
 
 //Pagers
 class QueryPager extends VideoPager {
@@ -704,8 +699,7 @@ class SearchPagerChannels extends ChannelPager {
 		const start = (this.context.page - 1) * this.context.page_size;
 		const end = (this.context.page) * this.context.page_size;
 
-		this.results = searchAndResolveChannels(this.context.query, start, this.context.page_size, this.nsfw)
-			.map(x => channelToAuthorLink(x));
+		this.results = searchAndResolveChannels(this.context.query, start, this.context.page_size, this.nsfw);
 		if (this.results.length == 0)
 			this.hasMore = false;
 
@@ -800,10 +794,47 @@ function claimSearch(query) {
 }
 
 function resolveClaimsChannel(claims) {
-	if (!claims || claims.length == 0)
+	if (!Array.isArray(claims) || claims.length === 0) 
 		return [];
 	const results = resolveClaims(claims);
-	return results.map(x => lbryChannelToPlatformChannel(x));
+	const batch = http.batch();
+
+	// getsub count using batch request
+    results.forEach(claim => {
+        batch.POST(
+            `${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
+            `auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
+            { 'Content-Type': 'application/x-www-form-urlencoded' }
+        );
+    });
+
+    const responses = batch.execute();
+
+    const responseMap = responses.reduce((map, resp) => {
+        try {
+            const url = new URL(resp.url);
+            const claimId = url.searchParams.get('claim_id');
+            if (claimId && resp.isOk){
+				map[claimId] = resp;
+			}
+        } catch (error) {
+            console.error(`Error parsing response URL:`, error);
+        }
+        return map;
+    }, {});
+
+    return results.map(channel => {
+        try {
+            const response = responseMap[channel.claim_id];
+            const subCount = response
+                ? JSON.parse(response.body)?.data?.[0] ?? 0
+                : 0;
+            return lbryChannelToPlatformChannel(channel, subCount);
+        } catch (error) {
+            console.error(`Error processing channel ${channel.claim_id}:`, error);
+            return lbryChannelToPlatformChannel(channel, 0);
+        }
+    });
 }
 function resolveClaimsVideo(claims) {
 	if (!claims || claims.length == 0)
@@ -874,13 +905,6 @@ function resolveClaims2(claims) {
 	return results
 }
 
-//Convert a channel to an AuthorLink
-function channelToAuthorLink(channel) {
-	return new PlatformAuthorLink(new PlatformID(PLATFORM, channel.id.value, plugin.config.id, PLATFORM_CLAIMTYPE),
-		channel.name,
-		channel.url,
-		channel.thumbnail ?? "");
-}
 
 //Convert a LBRY Channel (claim) to a PlatformChannel
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
@@ -1030,35 +1054,32 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 
 	let rating = null;
 	let viewCount = 0;
-	const newUserResp = http.GET(URL_USER_NEW, headersToAdd);
-	if (newUserResp && newUserResp.isOk) {
-		const newUserObj = JSON.parse(newUserResp.body);
-		if (newUserObj && newUserObj.success && newUserObj.data) {
-			const authToken = newUserObj.data.auth_token;
-			const reactionResp = http.POST(URL_REACTIONS, `auth_token=${authToken}&claim_ids=${lbry.claim_id}`, {
-				"Content-Type": "application/x-www-form-urlencoded"
-			});
 
-			if (reactionResp && reactionResp.isOk) {
-				const reactionObj = JSON.parse(reactionResp.body);
-				if (reactionObj && reactionObj.success && reactionObj.data && reactionObj.data.others_reactions) {
-					const robj = reactionObj.data.others_reactions[lbry.claim_id];
-					if (robj) {
-						rating = new RatingLikesDislikes(robj.like ?? 0, robj.dislike ?? 0);
-					}
-				}
+	const headers = {
+		"Content-Type": "application/x-www-form-urlencoded"
+	};
+
+	const [ reactionResp, viewCountResp ] = http
+	.batch()
+	.POST(URL_REACTIONS, `auth_token=${localState.auth_token}&claim_ids=${lbry.claim_id}`, headers)
+	.POST(URL_VIEW_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.claim_id}`, headers)
+	.execute();
+
+	if (reactionResp && reactionResp.isOk) {
+		const reactionObj = JSON.parse(reactionResp.body);
+		if (reactionObj && reactionObj.success && reactionObj.data && reactionObj.data.others_reactions) {
+			const robj = reactionObj.data.others_reactions[lbry.claim_id];
+			if (robj) {
+				rating = new RatingLikesDislikes(robj.like ?? 0, robj.dislike ?? 0);
 			}
+		}
+	}
 
-			const viewCountResp = http.POST(URL_VIEW_COUNT, `auth_token=${authToken}&claim_id=${lbry.claim_id}`, {
-				"Content-Type": "application/x-www-form-urlencoded"
-			});
 
-			if (viewCountResp && viewCountResp.isOk) {
-				const viewCountObj = JSON.parse(viewCountResp.body);
-				if (viewCountObj && viewCountObj.success && viewCountObj.data) {
-					viewCount = viewCountObj.data[0] ?? 0;
-				}
-			}
+	if (viewCountResp && viewCountResp.isOk) {
+		const viewCountObj = JSON.parse(viewCountResp.body);
+		if (viewCountObj && viewCountObj.success && viewCountObj.data) {
+			viewCount = viewCountObj.data[0] ?? 0;
 		}
 	}
 
@@ -1084,6 +1105,26 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		rating,
 		...source
 	});
+}
+
+const getAuthInfo = function() {
+
+	const headersToAdd = {
+		"Origin": "https://odysee.com"
+	}
+
+	const newUserResp = http.GET(URL_USER_NEW, headersToAdd);
+
+	if (newUserResp && newUserResp.isOk) {
+		const newUserObj = JSON.parse(newUserResp.body);
+		if (newUserObj && newUserObj.success && newUserObj.data) {
+			
+			const auth_token = newUserObj.data.auth_token;
+			const userId = newUserObj.data.id;
+
+			return { auth_token: auth_token, userId: userId };
+		}
+	}
 }
 
 
