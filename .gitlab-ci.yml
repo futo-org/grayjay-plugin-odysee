@@ -4,6 +4,7 @@ stages:
 deploy-master:
   stage: deploy
   script:
+    - export PRE_RELEASE=false
     - sh deploy.sh
   only:
     - master
@@ -11,6 +12,7 @@ deploy-master:
 deploy-dev:
   stage: deploy
   script:
-    - sh deploy.sh --pre-release
+    - export PRE_RELEASE=true
+    - sh deploy.sh
   only:
     - dev

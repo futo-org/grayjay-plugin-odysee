@@ -1,23 +1,12 @@
 #!/bin/sh
 DOCUMENT_ROOT=/var/www/sources
-PRE_RELEASE=false  # Default to false if --pre-release is not provided
 
-# Parse arguments
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --pre-release)
-      PRE_RELEASE=true  # Set to true if --pre-release is passed
-      shift
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
+# Use environment variable to determine deployment type
+PRE_RELEASE=${PRE_RELEASE:-false}  # Default to false if not set
 
 # Determine deployment directory
 if [ "$PRE_RELEASE" = "true" ]; then
-    DEPLOY_DIR="$DOCUMENT_ROOT/Odysee/pre-release"
+    DEPLOY_DIR="$DOCUMENT_ROOT/pre-release/Odysee"
 else
     DEPLOY_DIR="$DOCUMENT_ROOT/Odysee"
 fi
