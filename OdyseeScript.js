@@ -1054,15 +1054,17 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 
 	let rating = null;
 	let viewCount = 0;
+	let subCount = 0;
 
 	const headers = {
 		"Content-Type": "application/x-www-form-urlencoded"
 	};
 
-	const [ reactionResp, viewCountResp ] = http
+	const [ reactionResp, viewCountResp, subCountResp ] = http
 	.batch()
 	.POST(URL_REACTIONS, `auth_token=${localState.auth_token}&claim_ids=${lbry.claim_id}`, headers)
 	.POST(URL_VIEW_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.claim_id}`, headers)
+	.POST(URL_API_SUB_COUNT,`auth_token=${localState.auth_token}&claim_id=${lbry.signing_channel.claim_id}`, headers)
 	.execute();
 
 	if (reactionResp && reactionResp.isOk) {
@@ -1083,10 +1085,17 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		}
 	}
 
+	if (subCountResp && subCountResp.isOk) {
+		const subCountObj = JSON.parse(subCountResp.body);
+		if (subCountObj && subCountObj.success && subCountObj.data) {
+			subCount = subCountObj.data[0] ?? 0;
+		}
+	}
+
 	const shareUrl = lbry.signing_channel !== undefined
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
 		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
-
+		
 	return new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
@@ -1094,7 +1103,8 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 			lbry.signing_channel?.value.title ?? "",
 			lbry.signing_channel?.permanent_url,
-			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
+			lbry.signing_channel?.value?.thumbnail?.url ?? "",
+			subCount),
 		datetime: parseInt(lbry.value.release_time),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount,
