@@ -922,7 +922,7 @@ function lbryChannelToPlatformChannel(lbry, subs = 0) {
 
 //Convert a LBRY Video (claim) to a PlatformVideo
 function lbryVideoToPlatformVideo(lbry) {
-	const shareUrl = lbry.signing_channel !== undefined
+	const shareUrl = lbry.signing_channel?.claim_id !== undefined
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
 		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
 
@@ -1092,7 +1092,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		}
 	}
 
-	const shareUrl = lbry.signing_channel !== undefined
+	const shareUrl = lbry.signing_channel?.claim_id !== undefined
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
 		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
 		
@@ -1101,7 +1101,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
 		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel?.value.title ?? "",
+			lbry.signing_channel?.value?.title ?? "",
 			lbry.signing_channel?.permanent_url,
 			lbry.signing_channel?.value?.thumbnail?.url ?? "",
 			subCount),
