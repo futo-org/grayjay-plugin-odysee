@@ -17,15 +17,14 @@ const PLAYLIST_URL_BASE = "https://odysee.com/$/playlist/"
 const CLAIM_TYPE_STREAM = "stream";
 const ORDER_BY_RELEASETIME = "release_time";
 
-const REGEX_DETAILS_URL = new RegExp("lbry://(.*?)#(.*)");
-const ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/(@([._0-9a-zA-Z]+):[0-9a-fA-F]\/)+([!,'-_0-9a-zA-Z]+):([0-9a-fA-F])$/
-const OTHER_ODYSEE_DETAILS_URL = /^https:\/\/odysee.com\/([%!,'-_0-9a-zA-Z]+)(#|:)([0-9a-f]+)$/
-const REGEX_CHANNEL_URL = /lbry:\/\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?/
-const REGEX_CHANNEL_URL2 = /^https:\/\/odysee.com\/([^\/\n\r:#]+)(?::[0-9a-fA-F]+)?(?:#([0-9a-fA-F]+))?$/
+const REGEX_DETAILS_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
+const REGEX_CHANNEL_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)(@[^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
 const REGEX_COLLECTION = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F-]+?)$/
 const REGEX_FAVORITES = /^https:\/\/odysee\.com\/\$\/playlist\/favorites$/
 const REGEX_WATCH_LATER = /^https:\/\/odysee\.com\/\$\/playlist\/watchlater$/
+
+const CLAIM_ID_LENGTH = 40
 
 const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
@@ -81,13 +80,13 @@ source.enable = function (config, settings, savedState) {
 				userId,
 				auth_token
 			}
-			
+
 		} else {
 
-			const {userId, auth_token} = getAuthInfo();
+			const { userId, auth_token } = getAuthInfo();
 			localState.auth_token = auth_token;
 			localState.userId = userId;
-				
+
 		}
 	} else {
 		localState = JSON.parse(savedState)
@@ -153,22 +152,14 @@ source.getSearchChannelContentsCapabilities = function () {
 	};
 };
 source.searchChannelContents = function (channelUrl, query, type, order, filters) {
-	let urlMatch = REGEX_CHANNEL_URL.exec(channelUrl);
-	if (!urlMatch) {
-		urlMatch = REGEX_CHANNEL_URL2.exec(channelUrl);
-	}
-	if (!urlMatch) {
-		throw new ScriptException("Channel search not implemented for this URL type");
+	let { id: channel_id } = parseChannelUrl(channelUrl)
+
+	if (channel_id.length !== CLAIM_ID_LENGTH) {
+		const platform_channel = source.getChannel(channelUrl)
+		channel_id = platform_channel.id.value
 	}
 
-	const channelId = urlMatch[2];
-	if (!channelId) {
-		const curl = `${URL_BASE}/${urlMatch[1]}`;
-		const c = source.getChannel(curl);
-		return getSearchPagerVideos(query, false, 4, c.id.value);
-	}
-
-	return getSearchPagerVideos(query, false, 4, channelId);
+	return getSearchPagerVideos(query, false, 4, channel_id);
 };
 
 source.searchChannels = function (query) {
@@ -176,36 +167,39 @@ source.searchChannels = function (query) {
 };
 
 //Channel
+// examples
+// https://odysee.com/@switchedtolinux:0
+// https://odysee.com/@switchedtolinux:0?r=CpwgsVwZ2JEgHpGZZcUZGBPSMdKfZWyH
+// lbry://@dubdigital#c2079078fa907da862f99c549ecf507d5caeffd3
 source.isChannelUrl = function (url) {
-	return REGEX_CHANNEL_URL.test(url) || REGEX_CHANNEL_URL2.test(url);
+	return REGEX_CHANNEL_URL.test(url)
 };
-source.getChannel = function (url) {
-	const urlMatch = REGEX_CHANNEL_URL2.exec(url);
-	if (urlMatch) {
-		url = "lbry://" + urlMatch[1];
-	}
+function parseChannelUrl(url) {
+	const match_result = url.match(REGEX_CHANNEL_URL)
 
-	let [channel] = resolveClaimsChannel([url]);
-	return channel;
+	const slug = match_result[2]
+	const id = match_result[4]
+
+	return { slug, id }
+}
+source.getChannel = function (url) {
+	const { slug, id } = parseChannelUrl(url)
+
+	url = `lbry://${slug}#${id}`
+
+	let [channel] = resolveClaimsChannel([url])
+	return channel
 };
 source.getChannelContents = function (url) {
-	let urlMatch = REGEX_CHANNEL_URL.exec(url);
-	if (!urlMatch) {
-		urlMatch = REGEX_CHANNEL_URL2.exec(url);
-	}
-	if (!urlMatch) {
-		throw new ScriptException("Channel search not implemented for this URL type");
-	}
+	let { id: channel_id } = parseChannelUrl(url)
 
-	let channelId = urlMatch[2];
-	if (!channelId) {
-		const curl = `${URL_BASE}/${urlMatch[1]}`;
-		const c = source.getChannel(curl);
-		channelId = c.id.value;
+	if (channel_id.length !== CLAIM_ID_LENGTH) {
+		const platform_channel = source.getChannel(url)
+		channel_id = platform_channel.id.value
 	}
 
 	const query = {
-		channel_ids: [channelId],
+		channel_ids: [channel_id],
 		page: 1,
 		page_size: 8,
 		claim_type: [CLAIM_TYPE_STREAM],
@@ -215,10 +209,15 @@ source.getChannelContents = function (url) {
 	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
 };
 source.getChannelPlaylists = function (url) {
-	const channelId = url.match(REGEX_CHANNEL_URL)[2]
+	let { id: channel_id } = parseChannelUrl(url)
+
+	if (channel_id.length !== CLAIM_ID_LENGTH) {
+		const platform_channel = source.getChannel(url)
+		channel_id = platform_channel.id.value
+	}
 
 	// TODO load the first video of each playlist to grab thumbnails
-	return new ChannelPlaylistsPager(channelId, 1, 24)
+	return new ChannelPlaylistsPager(channel_id, 1, 24)
 }
 
 source.getChannelTemplateByClaimMap = () => {
@@ -232,21 +231,37 @@ source.getChannelTemplateByClaimMap = () => {
 };
 
 //Video
+// examples
+// https://odysee.com/We-Are-Anonymous:e
+// https://odysee.com/@Anonymous:17/FTS:9
+// https://odysee.com/@dubdigital:c/bitcoin-diamond-hands:3e
+// https://odysee.com/@switchedtolinux:0/clearing-the-alpine-forest-weekly-news:2?r=CpwgsVwZ2JEgHpGZZcUZGBPSMdKfZWyH
+// lbry://bitcoin-diamond-hands#3ef3d55066b9bee1419b538b371b463069c1f1a5
+// lbry://@dubdigital#c/bitcoin-diamond-hands#3e
+// https://odysee.com/@Questgenics:f/we-are-anonymous.....🎭:9?r=CpwgsVwZ2JEgHpGZZcUZGBPSMdKfZWyH
 source.isContentDetailsUrl = function (url) {
-	return REGEX_DETAILS_URL.test(url) || ODYSEE_DETAILS_URL.test(url) || OTHER_ODYSEE_DETAILS_URL.test(url)
+	return REGEX_DETAILS_URL.test(url)
 };
+/**
+ * 
+ * @param {*} url 
+ * @returns channel_slug and channel_id might be undefined
+ */
+function parseDetailsUrl(url) {
+	const match_result = url.match(REGEX_DETAILS_URL)
+
+	const channel_slug = match_result[3]
+	const channel_id = match_result[5]
+
+	const video_slug = match_result[6]
+	const video_id = match_result[8]
+
+	return { video_slug, video_id, channel_slug, channel_id, }
+}
 source.getContentDetails = function (url) {
-	let slug = url.match(REGEX_DETAILS_URL)?.[1]
-	let id = url.match(REGEX_DETAILS_URL)?.[2]
-	if (slug === undefined || id === undefined) {
-		slug = url.match(ODYSEE_DETAILS_URL)?.[2]
-		id = url.match(ODYSEE_DETAILS_URL)?.[3]
-	}
-	if (slug === undefined || id === undefined) {
-		slug = url.match(OTHER_ODYSEE_DETAILS_URL)[1]
-		id = url.match(OTHER_ODYSEE_DETAILS_URL)[3]
-	}
-	const claim = `lbry://${slug}#${id}`
+	const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
+
+	const claim = `lbry://${video_slug}#${video_id}`
 	return resolveClaimsVideoDetail([claim])[0];
 };
 
@@ -392,8 +407,12 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 		const intervalSeconds = 10
 		super(intervalSeconds * 1000)
 
-		const matchResult = url.match(REGEX_DETAILS_URL)
-		this.url = `${matchResult[1]}#${matchResult[2].slice(0, 1)}`
+		const { video_slug, video_id, channel_slug, channel_id } = parseDetailsUrl(url)
+		if (channel_slug === undefined) {
+			this.url = `${video_slug}#${video_id}`
+		} else {
+			this.url = `${channel_slug}#${channel_id}/${video_slug}#${video_id}`
+		}
 
 		this.duration = resolveClaims([url])[0].value.video.duration * 1000
 
@@ -794,47 +813,47 @@ function claimSearch(query) {
 }
 
 function resolveClaimsChannel(claims) {
-	if (!Array.isArray(claims) || claims.length === 0) 
+	if (!Array.isArray(claims) || claims.length === 0)
 		return [];
 	const results = resolveClaims(claims);
 	const batch = http.batch();
 
 	// getsub count using batch request
-    results.forEach(claim => {
-        batch.POST(
-            `${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
-            `auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
-            { 'Content-Type': 'application/x-www-form-urlencoded' }
-        );
-    });
+	results.forEach(claim => {
+		batch.POST(
+			`${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
+			`auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
+			{ 'Content-Type': 'application/x-www-form-urlencoded' }
+		);
+	});
 
-    const responses = batch.execute();
+	const responses = batch.execute();
 
-    const responseMap = responses.reduce((map, resp) => {
-        try {
-            const url = new URL(resp.url);
-            const claimId = url.searchParams.get('claim_id');
-            if (claimId && resp.isOk){
+	const responseMap = responses.reduce((map, resp) => {
+		try {
+			const url = new URL(resp.url);
+			const claimId = url.searchParams.get('claim_id');
+			if (claimId && resp.isOk) {
 				map[claimId] = resp;
 			}
-        } catch (error) {
-            console.error(`Error parsing response URL:`, error);
-        }
-        return map;
-    }, {});
+		} catch (error) {
+			console.error(`Error parsing response URL:`, error);
+		}
+		return map;
+	}, {});
 
-    return results.map(channel => {
-        try {
-            const response = responseMap[channel.claim_id];
-            const subCount = response
-                ? JSON.parse(response.body)?.data?.[0] ?? 0
-                : 0;
-            return lbryChannelToPlatformChannel(channel, subCount);
-        } catch (error) {
-            console.error(`Error processing channel ${channel.claim_id}:`, error);
-            return lbryChannelToPlatformChannel(channel, 0);
-        }
-    });
+	return results.map(channel => {
+		try {
+			const response = responseMap[channel.claim_id];
+			const subCount = response
+				? JSON.parse(response.body)?.data?.[0] ?? 0
+				: 0;
+			return lbryChannelToPlatformChannel(channel, subCount);
+		} catch (error) {
+			console.error(`Error processing channel ${channel.claim_id}:`, error);
+			return lbryChannelToPlatformChannel(channel, 0);
+		}
+	});
 }
 function resolveClaimsVideo(claims) {
 	if (!claims || claims.length == 0)
@@ -948,11 +967,13 @@ function format_odysee_share_url_anonymous(video_name, video_claim_id) {
 function format_odysee_share_url(channel_name, channel_claim_id, video_name, video_claim_id) {
 	return `${URL_BASE}/${channel_name}:${channel_claim_id.slice(0, 1)}/${video_name}:${video_claim_id.slice(0, 1)}`
 }
-//Convert a LBRY Video to a PlatformVideoDetail
+//Convert an LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
 	const headersToAdd = {
 		"Origin": "https://odysee.com"
 	}
+
+	log(lbry)
 
 	if (lbry.value?.video === undefined) {
 		throw new UnavailableException("Odysee live streams are not currently supported")
@@ -1060,12 +1081,12 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		"Content-Type": "application/x-www-form-urlencoded"
 	};
 
-	const [ reactionResp, viewCountResp, subCountResp ] = http
-	.batch()
-	.POST(URL_REACTIONS, `auth_token=${localState.auth_token}&claim_ids=${lbry.claim_id}`, headers)
-	.POST(URL_VIEW_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.claim_id}`, headers)
-	.POST(URL_API_SUB_COUNT,`auth_token=${localState.auth_token}&claim_id=${lbry.signing_channel.claim_id}`, headers)
-	.execute();
+	const [reactionResp, viewCountResp, subCountResp] = http
+		.batch()
+		.POST(URL_REACTIONS, `auth_token=${localState.auth_token}&claim_ids=${lbry.claim_id}`, headers)
+		.POST(URL_VIEW_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.claim_id}`, headers)
+		.POST(URL_API_SUB_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.signing_channel.claim_id}`, headers)
+		.execute();
 
 	if (reactionResp && reactionResp.isOk) {
 		const reactionObj = JSON.parse(reactionResp.body);
@@ -1095,7 +1116,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 	const shareUrl = lbry.signing_channel?.claim_id !== undefined
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
 		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
-		
+
 	return new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
@@ -1117,7 +1138,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 	});
 }
 
-const getAuthInfo = function() {
+const getAuthInfo = function () {
 
 	const headersToAdd = {
 		"Origin": "https://odysee.com"
@@ -1128,7 +1149,7 @@ const getAuthInfo = function() {
 	if (newUserResp && newUserResp.isOk) {
 		const newUserObj = JSON.parse(newUserResp.body);
 		if (newUserObj && newUserObj.success && newUserObj.data) {
-			
+
 			const auth_token = newUserObj.data.auth_token;
 			const userId = newUserObj.data.id;
 
