@@ -5,7 +5,7 @@
 	"authorUrl": "https://futo.org",
 	"platformUrl": "https://odysee.com",
 	"sourceUrl": "https://plugins.grayjay.app/Odysee/OdyseeConfig.json",
-	"repositoryUrl": "https://futo.org",
+	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/odysee",
 	"scriptUrl": "./OdyseeScript.js",
   	"version": 50,
 	"iconUrl": "./OdyseeIcon.png",
