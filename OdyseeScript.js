@@ -950,7 +950,7 @@ function lbryVideoToPlatformVideo(lbry) {
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
 		author: channelToPlatformAuthorLink(lbry),
-		datetime: parseInt(lbry.value.release_time),
+		datetime: lbryVideoToDateTime(lbry),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount: -1,
 		url: lbry.permanent_url,
@@ -1119,7 +1119,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
 		author: channelToPlatformAuthorLink(lbry, subCount),
-		datetime: parseInt(lbry.value.release_time),
+		datetime: lbryVideoToDateTime(lbry),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount,
 		url: lbry.permanent_url,
@@ -1167,6 +1167,10 @@ function getFallbackChannelName(lbry) {
 		? lbry.signing_channel.name.substring(1) 
 		: lbry.signing_channel.name)
 	: '';
+}
+
+function lbryVideoToDateTime(lbry) {
+	return parseInt(lbry?.value?.release_time ?? lbry?.timestamp ?? 0)
 }
 
 
