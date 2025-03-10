@@ -951,7 +951,7 @@ function lbryVideoToPlatformVideo(lbry) {
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
 		author: channelToPlatformAuthorLink(lbry),
 		datetime: lbryVideoToDateTime(lbry),
-		duration: lbry.value?.video?.duration ?? 0,
+		duration: lbryToDuration(lbry),
 		viewCount: -1,
 		url: lbry.permanent_url,
 		shareUrl,
@@ -966,169 +966,205 @@ function format_odysee_share_url(channel_name, channel_claim_id, video_name, vid
 }
 //Convert an LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
-	const headersToAdd = {
-		"Origin": "https://odysee.com"
-	}
+    const headersToAdd = {
+        "Origin": "https://odysee.com"
+    };
+    
+    const sdHash = lbry.value?.source?.sd_hash;
+    const claimId = lbry.claim_id;
+    const videoHeight = lbry.value?.video?.height ?? 0;
+    const videoWidth = lbry.value?.video?.width ?? 0;
+    const streamType = lbry.value?.stream_type;
+    const mediaType = lbry.value?.source?.media_type;
+    const name = lbry.name;
+    let video = null;
+    
+    // Helper function to get video duration
+    const getVideoDuration = () => lbryToDuration(lbry);
 
-	log(lbry)
-
-	if (lbry.value?.video === undefined) {
-		throw new UnavailableException("Odysee live streams are not currently supported")
-	}
-
-	const sdHash = lbry.value?.source?.sd_hash;
-	let source = null;
-	if (sdHash) {
-		const sources = [];
-
-		const hlsUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash}/master.m3u8`;
-		const hlsResponse2 = http.GET(hlsUrl2, headersToAdd);
-		if (hlsResponse2.isOk) {
-			sources.push(new HLSSource({
-				name: "HLS (v6)",
-				url: hlsUrl2,
-				duration: lbry.value?.video?.duration ?? 0,
-				priority: true,
-				requestModifier: {
-					headers: headersToAdd
-				}
-			}));
-		} else {
-			const hlsUrl = `https://player.odycdn.com/api/v4/streams/tc/${lbry.name}/${lbry.claim_id}/${sdHash}/master.m3u8`;
-			const hlsResponse = http.GET(hlsUrl, headersToAdd);
-			if (hlsResponse.isOk) {
-				sources.push(new HLSSource({
-					name: "HLS",
-					url: hlsUrl,
-					duration: lbry.value?.video?.duration ?? 0,
-					priority: true,
-					requestModifier: {
-						headers: headersToAdd
-					}
-				}));
-			}
-		}
-
-		const downloadUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash.substring(0, 6)}.mp4`;
-		console.log("downloadUrl2", downloadUrl2);
-		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-10", ...headersToAdd });
-		if (downloadResponse2.isOk) {
-			sources.push(new VideoUrlSource({
-				name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v6)",
-				url: downloadUrl2,
-				width: lbry.value?.video?.width ?? 0,
-				height: lbry.value?.video?.height ?? 0,
-				duration: lbry.value?.video?.duration ?? 0,
-				container: downloadResponse2.headers["content-type"]?.[0] ?? "video/mp4",
-				requestModifier: {
-					headers: headersToAdd
-				}
-			}));
-		} else {
-			const downloadUrl = `https://player.odycdn.com/api/v4/streams/free/${lbry.name}/${lbry.claim_id}/${sdHash.substring(0, 6)}`;
-			const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0", ...headersToAdd });
-			if (downloadResponse.isOk) {
-				sources.push(new VideoUrlSource({
-					name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v4)",
-					url: downloadUrl,
-					width: lbry.value?.video?.width ?? 0,
-					height: lbry.value?.video?.height ?? 0,
-					duration: lbry.value?.video?.duration ?? 0,
-					container: downloadResponse.headers["content-type"]?.[0] ?? "video/mp4",
-					requestModifier: {
-						headers: headersToAdd
-					}
-				}));
-			}
-		}
-
-		if (sources.length === 0) {
-			throw new UnavailableException("Members Only Content Is Not Currently Supported")
-		}
-
-		source = {
-			video: new VideoSourceDescriptor(sources)
-		};
-	} else {
-		source = {
-			video: new VideoSourceDescriptor([
-				new VideoUrlSource({
-					name: "Original " + (lbry.value?.video?.height ?? 0) + "P",
-					url: "https://cdn.lbryplayer.xyz/content/claims/" + lbry.name + "/" + lbry.claim_id + "/stream",
-					width: lbry.value?.video?.width ?? 0,
-					height: lbry.value?.video?.height ?? 0,
-					duration: lbry.value?.video?.duration ?? 0,
-					container: lbry.value?.source?.media_type ?? "",
-					requestModifier: {
-						headers: headersToAdd
-					}
-				})
-			])
-		};
-	}
-
-	if (IS_TESTING)
-		console.log(lbry);
-
-	let rating = null;
-	let viewCount = 0;
-	let subCount = 0;
-
-	const headers = {
-		"Content-Type": "application/x-www-form-urlencoded"
-	};
-
-	const [reactionResp, viewCountResp, subCountResp] = http
-		.batch()
-		.POST(URL_REACTIONS, `auth_token=${localState.auth_token}&claim_ids=${lbry.claim_id}`, headers)
-		.POST(URL_VIEW_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.claim_id}`, headers)
-		.POST(URL_API_SUB_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.signing_channel.claim_id}`, headers)
-		.execute();
-
-	if (reactionResp && reactionResp.isOk) {
-		const reactionObj = JSON.parse(reactionResp.body);
-		if (reactionObj && reactionObj.success && reactionObj.data && reactionObj.data.others_reactions) {
-			const robj = reactionObj.data.others_reactions[lbry.claim_id];
-			if (robj) {
-				rating = new RatingLikesDislikes(robj.like ?? 0, robj.dislike ?? 0);
-			}
-		}
-	}
-
-
-	if (viewCountResp && viewCountResp.isOk) {
-		const viewCountObj = JSON.parse(viewCountResp.body);
-		if (viewCountObj && viewCountObj.success && viewCountObj.data) {
-			viewCount = viewCountObj.data[0] ?? 0;
-		}
-	}
-
-	if (subCountResp && subCountResp.isOk) {
-		const subCountObj = JSON.parse(subCountResp.body);
-		if (subCountObj && subCountObj.success && subCountObj.data) {
-			subCount = subCountObj.data[0] ?? 0;
-		}
-	}
-
-	const shareUrl = lbry.signing_channel?.claim_id !== undefined
-		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
-		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
-
-	return new PlatformVideoDetails({
-		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
-		name: lbry.value?.title ?? "",
-		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: channelToPlatformAuthorLink(lbry, subCount),
-		datetime: lbryVideoToDateTime(lbry),
-		duration: lbry.value?.video?.duration ?? 0,
-		viewCount,
-		url: lbry.permanent_url,
-		shareUrl,
-		isLive: false,
-		description: lbry.value?.description ?? "",
-		rating,
-		...source
-	});
+    if (!sdHash) {
+        // Handle case with no sdHash
+        if (streamType === 'video') {
+            // Legacy URL format without sdHash
+            video = new VideoSourceDescriptor([
+                new VideoUrlSource({
+                    name: `Original ${videoHeight}P`,
+                    url: `https://cdn.lbryplayer.xyz/content/claims/${name}/${claimId}/stream`,
+                    width: videoWidth,
+                    height: videoHeight,
+                    duration: getVideoDuration(),
+                    container: mediaType ?? "",
+                    requestModifier: { headers: headersToAdd }
+                })
+            ]);
+        } else if (lbry.value?.video === undefined) {
+            throw new UnavailableException("Odysee live streams are not currently supported");
+        }
+    } else {
+        // With sdHash present, handle both audio and video
+        if (streamType === 'audio') {
+            const audioUrl = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}.mp4`;
+            const sources = [
+                new AudioUrlSource({
+                    name: mediaType,
+                    url: audioUrl,
+                    container: mediaType,
+                    duration: lbry.value?.audio?.duration ?? 0,
+                    requestModifier: { headers: headersToAdd }
+                })
+            ];
+            video = new UnMuxVideoSourceDescriptor([], sources);
+        }
+        else if (streamType === 'video') {
+            const sources = [];
+            const sdHashPrefix = sdHash.substring(0, 6);
+            
+            // Try HLS v6 first
+            const hlsUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}/master.m3u8`;
+            const hlsResponseV6 = http.GET(hlsUrlV6, headersToAdd);
+            
+            if (hlsResponseV6.isOk) {
+                sources.push(new HLSSource({
+                    name: "HLS (v6)",
+                    url: hlsUrlV6,
+                    duration: getVideoDuration(),
+                    priority: true,
+                    requestModifier: { headers: headersToAdd }
+                }));
+            } else {
+                // Fallback to HLS v4
+                const hlsUrlV4 = `https://player.odycdn.com/api/v4/streams/tc/${name}/${claimId}/${sdHash}/master.m3u8`;
+                const hlsResponseV4 = http.GET(hlsUrlV4, headersToAdd);
+                
+                if (hlsResponseV4.isOk) {
+                    sources.push(new HLSSource({
+                        name: "HLS",
+                        url: hlsUrlV4,
+                        duration: getVideoDuration(),
+                        priority: true,
+                        requestModifier: { headers: headersToAdd }
+                    }));
+                }
+            }
+            
+            // Try direct mp4 v6 first
+            const downloadUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHashPrefix}.mp4`;
+            const rangeHeaders = { "Range": "bytes=0-10", ...headersToAdd };
+            
+            console.log("downloadUrl2", downloadUrlV6);
+            const downloadResponseV6 = http.GET(downloadUrlV6, rangeHeaders);
+            
+            if (downloadResponseV6.isOk) {
+                sources.push(new VideoUrlSource({
+                    name: `Original ${videoHeight}P (v6)`,
+                    url: downloadUrlV6,
+                    width: videoWidth,
+                    height: videoHeight,
+                    duration: getVideoDuration(),
+                    container: downloadResponseV6.headers["content-type"]?.[0] ?? "video/mp4",
+                    requestModifier: { headers: headersToAdd }
+                }));
+            } else {
+                // Fallback to direct mp4 v4
+                const downloadUrlV4 = `https://player.odycdn.com/api/v4/streams/free/${name}/${claimId}/${sdHashPrefix}`;
+                const downloadResponseV4 = http.GET(downloadUrlV4, { "Range": "bytes=0-0", ...headersToAdd });
+                
+                if (downloadResponseV4.isOk) {
+                    sources.push(new VideoUrlSource({
+                        name: `Original ${videoHeight}P (v4)`,
+                        url: downloadUrlV4,
+                        width: videoWidth,
+                        height: videoHeight,
+                        duration: getVideoDuration(),
+                        container: downloadResponseV4.headers["content-type"]?.[0] ?? "video/mp4",
+                        requestModifier: { headers: headersToAdd }
+                    }));
+                }
+            }
+            
+            if (sources.length === 0) {
+                throw new UnavailableException("Members Only Content Is Not Currently Supported");
+            }
+            
+            video = new VideoSourceDescriptor(sources);
+        }
+        else if (lbry.value?.video === undefined) {
+            throw new UnavailableException("Odysee live streams are not currently supported");
+        }
+    }
+    
+    if (IS_TESTING) {
+        console.log(lbry);
+    }
+    
+    let rating = null;
+    let viewCount = 0;
+    let subCount = 0;
+    
+    const formHeaders = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    };
+    
+    const authToken = localState.auth_token;
+    const signingChannelId = lbry.signing_channel?.claim_id;
+    
+    // Execute batch HTTP requests for metadata
+    const batchResponses = http
+        .batch()
+        .POST(URL_REACTIONS, `auth_token=${authToken}&claim_ids=${claimId}`, formHeaders)
+        .POST(URL_VIEW_COUNT, `auth_token=${authToken}&claim_id=${claimId}`, formHeaders)
+        .POST(URL_API_SUB_COUNT, signingChannelId ? `auth_token=${authToken}&claim_id=${signingChannelId}` : '', formHeaders)
+        .execute();
+    
+    const [reactionResp, viewCountResp, subCountResp] = batchResponses;
+    
+    // Process reaction response
+    if (reactionResp?.isOk) {
+        const reactionObj = JSON.parse(reactionResp.body);
+        const reactionsData = reactionObj?.data?.others_reactions?.[claimId];
+        
+        if (reactionObj?.success && reactionsData) {
+            rating = new RatingLikesDislikes(reactionsData.like ?? 0, reactionsData.dislike ?? 0);
+        }
+    }
+    
+    // Process view count response
+    if (viewCountResp?.isOk) {
+        const viewCountObj = JSON.parse(viewCountResp.body); 
+        if (viewCountObj?.success && viewCountObj?.data) {
+            viewCount = viewCountObj.data[0] ?? 0;
+        }
+    }
+    
+    // Process subscriber count response
+    if (subCountResp?.isOk) {
+        const subCountObj = JSON.parse(subCountResp.body);
+        if (subCountObj?.success && subCountObj?.data) {
+            subCount = subCountObj.data[0] ?? 0;
+        }
+    }
+    
+    // Generate share URL
+    const shareUrl = signingChannelId
+        ? format_odysee_share_url(lbry.signing_channel.name, signingChannelId, name, claimId)
+        : format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
+    
+    // Return the final video details object
+    return new PlatformVideoDetails({
+        id: new PlatformID(PLATFORM, claimId, plugin.config.id),
+        name: lbry.value?.title ?? "",
+        thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
+        author: channelToPlatformAuthorLink(lbry, subCount),
+        datetime: lbryVideoToDateTime(lbry),
+        duration: getVideoDuration(),
+        viewCount,
+        url: lbry.permanent_url,
+        shareUrl,
+        isLive: false,
+        description: lbry.value?.description ?? "",
+        rating,
+        video
+    });
 }
 
 const getAuthInfo = function () {
@@ -1163,14 +1199,18 @@ function channelToPlatformAuthorLink(lbry, subCount) {
 
 function getFallbackChannelName(lbry) {
 	return lbry?.signing_channel?.name
-	? (lbry.signing_channel.name.startsWith('@') 
-		? lbry.signing_channel.name.substring(1) 
-		: lbry.signing_channel.name)
-	: '';
+		? (lbry.signing_channel.name.startsWith('@')
+			? lbry.signing_channel.name.substring(1)
+			: lbry.signing_channel.name)
+		: '';
 }
 
 function lbryVideoToDateTime(lbry) {
 	return parseInt(lbry?.value?.release_time ?? lbry?.timestamp ?? 0)
+}
+
+function lbryToDuration(lbry){
+	return lbry.value?.video?.duration ?? lbry.value?.audio?.duration ?? 0;
 }
 
 
