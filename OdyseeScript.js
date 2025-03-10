@@ -949,10 +949,7 @@ function lbryVideoToPlatformVideo(lbry) {
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel?.value?.title ?? "",
-			lbry.signing_channel?.permanent_url ?? "",
-			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
+		author: channelToPlatformAuthorLink(lbry),
 		datetime: parseInt(lbry.value.release_time),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount: -1,
@@ -1121,11 +1118,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel?.value?.title ?? "",
-			lbry.signing_channel?.permanent_url,
-			lbry.signing_channel?.value?.thumbnail?.url ?? "",
-			subCount),
+		author: channelToPlatformAuthorLink(lbry, subCount),
 		datetime: parseInt(lbry.value.release_time),
 		duration: lbry.value?.video?.duration ?? 0,
 		viewCount,
@@ -1156,6 +1149,24 @@ const getAuthInfo = function () {
 			return { auth_token: auth_token, userId: userId };
 		}
 	}
+}
+
+function channelToPlatformAuthorLink(lbry, subCount) {
+	return new PlatformAuthorLink(
+		new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+		lbry.signing_channel?.value?.title || getFallbackChannelName(lbry) || "",
+		lbry.signing_channel?.permanent_url ?? "",
+		lbry.signing_channel?.value?.thumbnail?.url ?? "",
+		subCount
+	)
+}
+
+function getFallbackChannelName(lbry) {
+	return lbry?.signing_channel?.name
+	? (lbry.signing_channel.name.startsWith('@') 
+		? lbry.signing_channel.name.substring(1) 
+		: lbry.signing_channel.name)
+	: '';
 }
 
 
