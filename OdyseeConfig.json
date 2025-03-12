@@ -58,7 +58,7 @@
 	"changelog": {
 		"51": [
 			"Add support for audio streams;",
-			"Add content recomendation support;",
+			"Add content recommendation support;",
 			"Initial support for text Posts (no deep-linking yet);",
 			"Use the channel name as a fallback when channel title is not available;",
 			"Use content timestamp when release_time is not available;"
