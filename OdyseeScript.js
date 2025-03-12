@@ -29,7 +29,7 @@ const CLAIM_ID_LENGTH = 40
 const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
 
-const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "")
+const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "","https://plugins.grayjay.app/Odysee/OdyseeIcon.png")
 
 let localState = {};
 let localSettings
@@ -1124,7 +1124,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
             const hlsUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}/master.m3u8`;
             const hlsResponseV6 = http.GET(hlsUrlV6, headersToAdd);
             
-            if (hlsResponseV6.isOk) {
+            if (hlsResponseV6.isOk && hlsResponseV6.body) {
                 sources.push(new HLSSource({
                     name: "HLS (v6)",
                     url: hlsUrlV6,
@@ -1136,8 +1136,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
                 // Fallback to HLS v4
                 const hlsUrlV4 = `https://player.odycdn.com/api/v4/streams/tc/${name}/${claimId}/${sdHash}/master.m3u8`;
                 const hlsResponseV4 = http.GET(hlsUrlV4, headersToAdd);
-                
-                if (hlsResponseV4.isOk) {
+                if (hlsResponseV4.isOk && hlsResponseV4.body) {
                     sources.push(new HLSSource({
                         name: "HLS",
                         url: hlsUrlV4,
@@ -1245,6 +1244,7 @@ const getAuthInfo = function () {
 }
 
 function channelToPlatformAuthorLink(lbry, subCount) {
+	if (lbry.signing_channel?.claim_id) {
 	return new PlatformAuthorLink(
 		new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 		lbry.signing_channel?.value?.title || getFallbackChannelName(lbry) || "",
@@ -1252,6 +1252,9 @@ function channelToPlatformAuthorLink(lbry, subCount) {
 		lbry.signing_channel?.value?.thumbnail?.url ?? "",
 		subCount
 	)
+	} else {
+		return EMPTY_AUTHOR;
+	}
 }
 
 function getFallbackChannelName(lbry) {
