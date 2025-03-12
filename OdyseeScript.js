@@ -15,6 +15,7 @@ const URL_API_SUB_COUNT = 'https://api.odysee.com/subscription/sub_count';
 const PLAYLIST_URL_BASE = "https://odysee.com/$/playlist/"
 
 const CLAIM_TYPE_STREAM = "stream";
+const CLAIM_TYPE_REPOST = "repost";
 const ORDER_BY_RELEASETIME = "release_time";
 
 const REGEX_DETAILS_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
@@ -33,6 +34,8 @@ const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.
 
 let localState = {};
 let localSettings
+let localConfig = {};
+let shortContentThresholdOptions = [];
 
 const headersToAdd = {
 	"Origin": "https://odysee.com"
@@ -49,7 +52,11 @@ source.enable = function (config, settings, savedState) {
 		log("logging savedState")
 		log(savedState)
 	}
-	localSettings = settings
+	localSettings = settings;
+	localConfig = config;
+
+	shortContentThresholdOptions = loadOptionsForSetting('shortContentThresholdIndex');
+
 	if (!savedState) {
 		if (bridge.isLoggedIn()) {
 			const response = http
@@ -194,7 +201,15 @@ source.getChannel = function (url) {
 	let [channel] = resolveClaimsChannel([url])
 	return channel
 };
-source.getChannelContents = function (url) {
+
+source.getChannelCapabilities = () => {
+	return {
+		types: [Type.Feed.Videos, Type.Feed.Shorts],
+		sorts: []
+	};
+}
+
+source.getChannelContents = function (url, type) {
 	let { id: channel_id } = parseChannelUrl(url)
 
 	if (channel_id.length !== CLAIM_ID_LENGTH) {
@@ -202,15 +217,38 @@ source.getChannelContents = function (url) {
 		channel_id = platform_channel.id.value
 	}
 
-	const query = {
+	let query = {
 		channel_ids: [channel_id],
 		page: 1,
 		page_size: 8,
-		claim_type: [CLAIM_TYPE_STREAM],
-		order_by: [ORDER_BY_RELEASETIME]
+		claim_type: [CLAIM_TYPE_STREAM , CLAIM_TYPE_REPOST],
+		order_by: [ORDER_BY_RELEASETIME],
+		// has_source: true
 	}
 
-	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
+	const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+
+	switch(type) {
+		case undefined:
+		case null:
+		case "":
+		case Type.Feed.Videos:
+			// query.duration = [
+			// 	'>60'
+			// ]			
+			break;
+		case Type.Feed.Shorts:
+			query.duration = [
+				'>=0',
+				`<=${shortContentThreshold}`
+			]
+			break;
+		default:
+			throw new ScriptException("Unsupported type: " + type);
+	}
+
+	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS }, type);
+
 };
 source.getChannelPlaylists = function (url) {
 	let { id: channel_id } = parseChannelUrl(url)
@@ -297,7 +335,7 @@ source.getContentRecommendations = (url, initialData) => {
 		s: query,
 		related_to: claim_id,
 		from: 0,
-		size: 20,
+		size: 10,
 		free_only: true,
 		nsfw: localSettings.allowMatureContent,
 		user_id: localState.userId,
@@ -642,9 +680,9 @@ function getOdyseeContentData() {
 
 	return contentResp.data["en"];
 }
-function getQueryPager(query) {
+function getQueryPager(query, type) {
 	const initialResults = claimSearch(query);
-	return new QueryPager(query, initialResults);
+	return new QueryPager(query, initialResults, type);
 }
 function getSearchPagerVideos(query, nsfw = false, maxRetry = 0, channelId = null, sortBy = null, timeFilter = null) {
 	const pageSize = 10;
@@ -660,14 +698,22 @@ function getSearchPagerChannels(query, nsfw = false) {
 
 //Pagers
 class QueryPager extends VideoPager {
-	constructor(query, results) {
+	constructor(query, results, type) {
 		// updated Masmore condition since some unsupported content types may be hidden and would break the pagination
-		super(results, !!results.length, query);
+		super(results, !!results.length, { query, type });
 	}
 
 	nextPage() {
-		this.context.page = this.context.page + 1;
-		return getQueryPager(this.context);
+		this.context.query.page = (this.context.query.page || 0) + 1;
+		
+		const pager = getQueryPager(this.context.query, this.context.type);
+		
+		const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+		if(this.context.type === Type.Feed.Videos) {
+			pager.results = pager.results.filter(e => e.duration <= 0 || e.duration > shortContentThreshold);
+		}
+
+		return pager;
 	}
 }
 function getPlaylists(channelId, nextPageToLoad, pageSize) {
@@ -1056,7 +1102,7 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 		viewCount,
 		textType: Type.Text.HTML,
 		content: markdownToHtml(postContent),
-		images: [],
+		images: [lbry.value?.thumbnail?.url], //TODO: extract other images
 		thumbnails: [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])],
 		shareUrl
 	});
@@ -1079,7 +1125,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
     const mediaType = lbry.value?.source?.media_type;
     const name = lbry.name;
     let video = null;
-    
+
     // Helper function to get video duration
     const getVideoDuration = () => lbryToDuration(lbry);
 
@@ -1203,7 +1249,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		subCount
 	} = lbryToMetrics(lbry);
 
-    
+
     // Generate share URL
 	const shareUrl = lbry?.signing_channel?.claim_id
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel?.claim_id, name, claimId)
@@ -1245,13 +1291,13 @@ const getAuthInfo = function () {
 
 function channelToPlatformAuthorLink(lbry, subCount) {
 	if (lbry.signing_channel?.claim_id) {
-	return new PlatformAuthorLink(
-		new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-		lbry.signing_channel?.value?.title || getFallbackChannelName(lbry) || "",
-		lbry.signing_channel?.permanent_url ?? "",
-		lbry.signing_channel?.value?.thumbnail?.url ?? "",
-		subCount
-	)
+		return new PlatformAuthorLink(
+			new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+			lbry.signing_channel?.value?.title || getFallbackChannelName(lbry) || "",
+			lbry.signing_channel?.permanent_url ?? "",
+			lbry.signing_channel?.value?.thumbnail?.url ?? "",
+			subCount
+		)
 	} else {
 		return EMPTY_AUTHOR;
 	}
@@ -1564,6 +1610,11 @@ function sanitizeUrl(url) {
         // If URL parsing fails, return a harmless link
         return '#';
     }
+}
+
+function loadOptionsForSetting(settingKey) {
+	return localConfig?.settings?.find((s) => s.variable == settingKey)
+	  ?.options ?? [];
 }
 
 
