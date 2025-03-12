@@ -262,8 +262,62 @@ source.getContentDetails = function (url) {
 	const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
 
 	const claim = `lbry://${video_slug}#${video_id}`
-	return resolveClaimsVideoDetail([claim])[0];
+	const result = resolveClaimsVideoDetail([claim])[0];
+
+	result.getContentRecommendations = function () {
+		return source.getContentRecommendations(claim, { claim_id: result.id.value, title: result.name });
+	};
+
+	if(IS_TESTING) {
+		result.getContentRecommendations();
+	}
+
+	return result;
 };
+
+source.getContentRecommendations = (url, initialData) => {
+
+	let claim_id = '';
+	let query = '';
+
+	if(initialData && initialData.claim_id && initialData.title) {
+		claim_id = initialData.claim_id;
+		query = initialData.title;
+	} else {
+		const result = resolveClaimsVideoDetail([url])[0];
+		claim_id = result.id.value;
+		query = result.name;
+	}
+	
+	const params = objectToUrlEncodedString({
+		s: query,
+		related_to: claim_id,
+		from: 0,
+		size: 20,
+		free_only: true,
+		nsfw: true,
+		user_id: localState.userId,
+		uid: localState.userId
+	});
+
+	const res = http.GET(`https://recsys.odysee.tv/search?${params}`, {});
+
+	if(res.isOk) {
+		const body = JSON.parse(res.body);
+		const claim_ids = body.map(e => e.claimId);
+
+		const contentPager = claimSearch({
+			claim_ids: claim_ids,
+			no_totals: true,
+			page: 1,
+			page_size: 20
+		});
+
+		return new ContentPager(contentPager, false)
+	}
+
+	return new ContentPager([], false);
+}
 
 source.getComments = function (url) {
 	const videoId = url.split('#')[1];
@@ -809,7 +863,9 @@ function claimSearch(query) {
 	if (resp.code >= 300)
 		throw "Failed to search claims\n" + resp.body;
 	const result = JSON.parse(resp.body);
-	return result.result.items.map((x) => lbryVideoToPlatformVideo(x));
+	return result.result.items
+	.map((x) => lbryVideoToPlatformVideo(x))
+	.sort((a, b) => b.datetime - a.datetime);
 }
 
 function resolveClaimsChannel(claims) {
@@ -1211,6 +1267,20 @@ function lbryVideoToDateTime(lbry) {
 
 function lbryToDuration(lbry){
 	return lbry.value?.video?.duration ?? lbry.value?.audio?.duration ?? 0;
+}
+
+function objectToUrlEncodedString(obj) {
+	const encodedParams = [];
+  
+	for (const key in obj) {
+	  if (obj.hasOwnProperty(key)) {
+		const encodedKey = encodeURIComponent(key);
+		const encodedValue = encodeURIComponent(obj[key]);
+		encodedParams.push(`${encodedKey}=${encodedValue}`);
+	  }
+	}
+  
+	return encodedParams.join('&');
 }
 
 
