@@ -288,9 +288,9 @@ source.getContentRecommendations = (url, initialData) => {
 		claim_id = initialData.claim_id;
 		query = initialData.title;
 	} else {
-		const result = resolveClaimsVideoDetail([url])[0];
-		claim_id = result.id.value;
-		query = result.name;
+		const [result] = resolveClaims([url]);
+		claim_id = result.claim_id;
+		query = result.value.title;
 	}
 	
 	const params = objectToUrlEncodedString({
