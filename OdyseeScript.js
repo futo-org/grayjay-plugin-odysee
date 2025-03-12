@@ -34,6 +34,10 @@ const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.
 let localState = {};
 let localSettings
 
+const headersToAdd = {
+	"Origin": "https://odysee.com"
+}
+
 //Source Method
 source.enable = function (config, settings, savedState) {
 	if (IS_TESTING) {
@@ -295,15 +299,15 @@ source.getContentRecommendations = (url, initialData) => {
 		from: 0,
 		size: 20,
 		free_only: true,
-		nsfw: true,
+		nsfw: localSettings.allowMatureContent,
 		user_id: localState.userId,
 		uid: localState.userId
 	});
 
-	const res = http.GET(`https://recsys.odysee.tv/search?${params}`, {});
+	const relatedResponse = http.GET(`https://recsys.odysee.tv/search?${params}`, {});
 
-	if(res.isOk) {
-		const body = JSON.parse(res.body);
+	if(relatedResponse.isOk) {
+		const body = JSON.parse(relatedResponse.body);
 		const claim_ids = body.map(e => e.claimId);
 
 		const contentPager = claimSearch({
@@ -657,7 +661,8 @@ function getSearchPagerChannels(query, nsfw = false) {
 //Pagers
 class QueryPager extends VideoPager {
 	constructor(query, results) {
-		super(results, results.length >= query.page_size, query);
+		// updated Masmore condition since some unsupported content types may be hidden and would break the pagination
+		super(results, !!results.length, query);
 	}
 
 	nextPage() {
@@ -863,9 +868,12 @@ function claimSearch(query) {
 	if (resp.code >= 300)
 		throw "Failed to search claims\n" + resp.body;
 	const result = JSON.parse(resp.body);
-	return result.result.items
-	.map((x) => lbryVideoToPlatformVideo(x))
-	.sort((a, b) => b.datetime - a.datetime);
+	const items = result.result.items;
+	const media_stream_types = ['audio','video'];
+	const docs_stream_types = ['document'];
+	let media = items.filter(z => media_stream_types.includes(z.value.stream_type)).map((x) => lbryVideoToPlatformVideo(x));
+	let documents = items.filter(z => docs_stream_types.includes(z.value.stream_type)).map(x => lbryDocumentToPlatformPost(x));
+	return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
 }
 
 function resolveClaimsChannel(claims) {
@@ -1014,6 +1022,46 @@ function lbryVideoToPlatformVideo(lbry) {
 		isLive: false
 	});
 }
+
+function lbryDocumentToPlatformPost(lbry, postContent) {
+	const shareUrl = lbry.signing_channel?.claim_id !== undefined
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
+
+	const sdHash = lbry.value?.source?.sd_hash;
+	const sdHashPrefix = sdHash.substring(0, 6);
+
+	if (!postContent) {
+		// Odysee get the markdown content like this...
+		const res = http.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+
+		if (res.isOk) {
+			postContent = res.body;
+		}
+	}
+
+	const {
+		rating, 
+		viewCount, 
+		subCount
+	} = lbryToMetrics(lbry);
+
+	return new PlatformPostDetails({
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+		name: lbry.value?.title ?? "",
+		author: channelToPlatformAuthorLink(lbry, subCount),
+		datetime: lbryVideoToDateTime(lbry),
+		url: lbry.permanent_url,
+		rating: rating,
+		viewCount,
+		textType: Type.Text.HTML,
+		content: markdownToHtml(postContent),
+		images: [],
+		thumbnails: [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])],
+		shareUrl
+	});
+}
+
 function format_odysee_share_url_anonymous(video_name, video_claim_id) {
 	return `${URL_BASE}/${video_name}:${video_claim_id.slice(0, 1)}`
 }
@@ -1022,9 +1070,6 @@ function format_odysee_share_url(channel_name, channel_claim_id, video_name, vid
 }
 //Convert an LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
-    const headersToAdd = {
-        "Origin": "https://odysee.com"
-    };
     
     const sdHash = lbry.value?.source?.sd_hash;
     const claimId = lbry.claim_id;
@@ -1065,7 +1110,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
                     name: mediaType,
                     url: audioUrl,
                     container: mediaType,
-                    duration: lbry.value?.audio?.duration ?? 0,
+                    duration: getVideoDuration(),
                     requestModifier: { headers: headersToAdd }
                 })
             ];
@@ -1153,56 +1198,16 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
         console.log(lbry);
     }
     
-    let rating = null;
-    let viewCount = 0;
-    let subCount = 0;
-    
-    const formHeaders = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    };
-    
-    const authToken = localState.auth_token;
-    const signingChannelId = lbry.signing_channel?.claim_id;
-    
-    // Execute batch HTTP requests for metadata
-    const batchResponses = http
-        .batch()
-        .POST(URL_REACTIONS, `auth_token=${authToken}&claim_ids=${claimId}`, formHeaders)
-        .POST(URL_VIEW_COUNT, `auth_token=${authToken}&claim_id=${claimId}`, formHeaders)
-        .POST(URL_API_SUB_COUNT, signingChannelId ? `auth_token=${authToken}&claim_id=${signingChannelId}` : '', formHeaders)
-        .execute();
-    
-    const [reactionResp, viewCountResp, subCountResp] = batchResponses;
-    
-    // Process reaction response
-    if (reactionResp?.isOk) {
-        const reactionObj = JSON.parse(reactionResp.body);
-        const reactionsData = reactionObj?.data?.others_reactions?.[claimId];
-        
-        if (reactionObj?.success && reactionsData) {
-            rating = new RatingLikesDislikes(reactionsData.like ?? 0, reactionsData.dislike ?? 0);
-        }
-    }
-    
-    // Process view count response
-    if (viewCountResp?.isOk) {
-        const viewCountObj = JSON.parse(viewCountResp.body); 
-        if (viewCountObj?.success && viewCountObj?.data) {
-            viewCount = viewCountObj.data[0] ?? 0;
-        }
-    }
-    
-    // Process subscriber count response
-    if (subCountResp?.isOk) {
-        const subCountObj = JSON.parse(subCountResp.body);
-        if (subCountObj?.success && subCountObj?.data) {
-            subCount = subCountObj.data[0] ?? 0;
-        }
-    }
+	const {
+		rating, 
+		viewCount, 
+		subCount
+	} = lbryToMetrics(lbry);
+
     
     // Generate share URL
-    const shareUrl = signingChannelId
-        ? format_odysee_share_url(lbry.signing_channel.name, signingChannelId, name, claimId)
+	const shareUrl = lbry?.signing_channel?.claim_id
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel?.claim_id, name, claimId)
         : format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
     
     // Return the final video details object
@@ -1224,10 +1229,6 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 }
 
 const getAuthInfo = function () {
-
-	const headersToAdd = {
-		"Origin": "https://odysee.com"
-	}
 
 	const newUserResp = http.GET(URL_USER_NEW, headersToAdd);
 
@@ -1269,6 +1270,61 @@ function lbryToDuration(lbry){
 	return lbry.value?.video?.duration ?? lbry.value?.audio?.duration ?? 0;
 }
 
+function lbryToMetrics(lbry) {
+
+	const claimId = lbry.claim_id;
+
+	let rating = null;
+	let viewCount = 0;
+	let subCount = 0;
+
+	const formHeaders = {
+		"Content-Type": "application/x-www-form-urlencoded"
+	};
+
+	const authToken = localState.auth_token;
+
+	// Execute batch HTTP requests for metadata
+	const batchResponses = http
+		.batch()
+		.POST(URL_REACTIONS, `auth_token=${authToken}&claim_ids=${claimId}`, formHeaders)
+		.POST(URL_VIEW_COUNT, `auth_token=${authToken}&claim_id=${claimId}`, formHeaders)
+		.POST(URL_API_SUB_COUNT, lbry.signing_channel?.claim_id ? `auth_token=${authToken}&claim_id=${lbry.signing_channel?.claim_id}` : '', formHeaders)
+		.execute();
+
+	const [reactionResp, viewCountResp, subCountResp] = batchResponses;
+
+	// Process reaction response
+	if (reactionResp?.isOk) {
+		const reactionObj = JSON.parse(reactionResp.body);
+		const reactionsData = reactionObj?.data?.others_reactions?.[claimId];
+
+		if (reactionObj?.success && reactionsData) {
+			rating = new RatingLikesDislikes(reactionsData.like ?? 0, reactionsData.dislike ?? 0);
+		}
+	}
+
+	// Process view count response
+	if (viewCountResp?.isOk) {
+		const viewCountObj = JSON.parse(viewCountResp.body);
+		if (viewCountObj?.success && viewCountObj?.data) {
+			viewCount = viewCountObj.data[0] ?? 0;
+		}
+	}
+
+	// Process subscriber count response
+	if (subCountResp?.isOk) {
+		const subCountObj = JSON.parse(subCountResp.body);
+		if (subCountObj?.success && subCountObj?.data) {
+			subCount = subCountObj.data[0] ?? 0;
+		}
+	}
+
+	return {
+		rating, viewCount, subCount
+	}
+}
+
 function objectToUrlEncodedString(obj) {
 	const encodedParams = [];
   
@@ -1281,6 +1337,230 @@ function objectToUrlEncodedString(obj) {
 	}
   
 	return encodedParams.join('&');
+}
+
+/**
+ * Converts Markdown text to HTML
+ * @param {string} markdown - The markdown text to convert
+ * @returns {string} The converted HTML
+ */
+function markdownToHtml(markdown) {
+    if (!markdown) return '';
+    
+    // Preprocessing - normalize line endings
+    let html = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    
+    // First, escape all HTML to prevent injection attacks
+    html = escapeHtml(html);
+    
+    // Process code blocks (need to handle these first)
+    html = html.replace(/```([a-z]*)\n([\s\S]*?)\n```/g, function(match, language, code) {
+        return `<pre><code class="language-${language}">${code}</code></pre>`;
+    });
+    
+    // Process inline code (already escaped)
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    
+    // Process headings (# Heading, ## Heading, etc)
+    html = html.replace(/^(#{1,6})\s+(.*?)$/gm, function(match, hashes, content) {
+        const level = hashes.length;
+        return `<h${level}>${content.trim()}</h${level}>`;
+    });
+    
+    // Process bold (** or __)
+    html = html.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
+    
+    // Process italic (* or _)
+    html = html.replace(/(\*|_)(.*?)\1/g, '<em>$2</em>');
+    
+    // Process links [text](url) - with URL validation
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, text, url) {
+        // Validate and sanitize URLs
+        if (isValidUrl(url)) {
+            return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${text}</a>`;
+        } else {
+            return text; // If URL is invalid, just show the text
+        }
+    });
+    
+    // Process images ![alt](url) - with URL validation
+    html = html.replace(/!\[([^\]]+)\]\(([^)]+)\)/g, function(match, alt, url) {
+        if (isValidUrl(url)) {
+            return `<img src="${sanitizeUrl(url)}" alt="${alt}" loading="lazy">`;
+        } else {
+            return `[Image: ${alt}]`; // Fallback for invalid URLs
+        }
+    });
+    
+    // Process horizontal rules
+    html = html.replace(/^([-*_])\1\1+$/gm, '<hr>');
+    
+    // Process unordered lists
+    let inList = false;
+    let listHtml = '';
+    
+    html = html.split('\n').map(line => {
+        const listMatch = line.match(/^[\*\-\+]\s+(.*)$/);
+        if (listMatch) {
+            if (!inList) {
+                inList = true;
+                listHtml = '<ul>';
+            }
+            listHtml += `<li>${listMatch[1]}</li>`;
+            return null; // Mark for removal
+        } else if (inList && line.trim() === '') {
+            inList = false;
+            const result = listHtml + '</ul>';
+            listHtml = '';
+            return result;
+        } else if (inList) {
+            inList = false;
+            const result = listHtml + '</ul>';
+            listHtml = '';
+            return result + '\n' + line;
+        }
+        return line;
+    }).filter(line => line !== null).join('\n');
+    
+    // Clean up any remaining list
+    if (inList) {
+        html += listHtml + '</ul>';
+    }
+    
+    // Process ordered lists (similar approach to unordered lists)
+    inList = false;
+    listHtml = '';
+    
+    html = html.split('\n').map(line => {
+        const listMatch = line.match(/^\d+\.\s+(.*)$/);
+        if (listMatch) {
+            if (!inList) {
+                inList = true;
+                listHtml = '<ol>';
+            }
+            listHtml += `<li>${listMatch[1]}</li>`;
+            return null; // Mark for removal
+        } else if (inList && line.trim() === '') {
+            inList = false;
+            const result = listHtml + '</ol>';
+            listHtml = '';
+            return result;
+        } else if (inList) {
+            inList = false;
+            const result = listHtml + '</ol>';
+            listHtml = '';
+            return result + '\n' + line;
+        }
+        return line;
+    }).filter(line => line !== null).join('\n');
+    
+    // Clean up any remaining list
+    if (inList) {
+        html += listHtml + '</ol>';
+    }
+    
+    // Process blockquotes
+    html = html.replace(/^>\s+(.*)$/gm, '<blockquote>$1</blockquote>');
+    
+    // Process paragraphs (any text between blank lines that isn't a special element)
+    let inParagraph = false;
+    let paragraphContent = '';
+    
+    html = html.split('\n').map(line => {
+        if (line.trim() === '') {
+            if (inParagraph) {
+                inParagraph = false;
+                const result = `<p>${paragraphContent}</p>`;
+                paragraphContent = '';
+                return result;
+            }
+            return '';
+        } else if (line.startsWith('<') && !inParagraph) {
+            // Skip lines that already have HTML tags
+            return line;
+        } else {
+            if (!inParagraph) {
+                inParagraph = true;
+                paragraphContent = line;
+            } else {
+                paragraphContent += ' ' + line;
+            }
+            return null; // Mark for removal
+        }
+    }).filter(line => line !== null).join('\n');
+    
+    // Clean up any remaining paragraph
+    if (inParagraph) {
+        html += `<p>${paragraphContent}</p>`;
+    }
+    
+    // Process automatic links (bare URLs) with validation
+    html = html.replace(/(?<!["\(])(https?:\/\/[^\s<]+)(?!["\)])/g, function(match, url) {
+        if (isValidUrl(url)) {
+            return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${url}</a>`;
+        } else {
+            return url; // If URL is invalid, just show the text
+        }
+    });
+    
+    return html;
+}
+
+/**
+ * Escapes HTML special characters to prevent XSS attacks
+ * @param {string} text - The text to escape
+ * @returns {string} The escaped text
+ */
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+/**
+ * Validates a URL to ensure it uses an acceptable protocol
+ * @param {string} url - The URL to validate
+ * @returns {boolean} Whether the URL is valid
+ */
+function isValidUrl(url) {
+    // Basic URL validation
+    try {
+        const parsedUrl = new URL(url);
+        // Only allow http, https protocols (no javascript:, data:, etc.)
+        return ['http:', 'https:','lbry:'].includes(parsedUrl.protocol);
+    } catch (e) {
+        // If URL is malformed, consider it invalid
+        return false;
+    }
+}
+
+/**
+ * Sanitizes a URL to prevent XSS attacks
+ * @param {string} url - The URL to sanitize
+ * @returns {string} The sanitized URL
+ */
+function sanitizeUrl(url) {
+    // Ensure URL is a string
+    url = String(url);
+    
+    try {
+        // Parse the URL to get components
+        const parsedUrl = new URL(url);
+        
+        // Check for potentially dangerous protocols
+        if (!['http:', 'https:','lbry:'].includes(parsedUrl.protocol)) {
+            return '#'; // Return harmless link
+        }
+        
+        // Return the original URL if it passed our checks
+        return url;
+    } catch (e) {
+        // If URL parsing fails, return a harmless link
+        return '#';
+    }
 }
 
 
