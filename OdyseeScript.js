@@ -18,6 +18,8 @@ const CLAIM_TYPE_STREAM = "stream";
 const CLAIM_TYPE_REPOST = "repost";
 const ORDER_BY_RELEASETIME = "release_time";
 
+const MEDIA_CONTENT_TYPE = 1;
+
 const REGEX_DETAILS_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
 const REGEX_CHANNEL_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)(@[^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
@@ -32,7 +34,9 @@ const PLATFORM_CLAIMTYPE = 3;
 
 const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "","https://plugins.grayjay.app/Odysee/OdyseeIcon.png")
 
-let localState = {};
+let localState = {
+	batch_response_cache: {}
+};
 let localSettings
 let localConfig = {};
 let shortContentThresholdOptions = [];
@@ -708,9 +712,10 @@ class QueryPager extends VideoPager {
 		
 		const pager = getQueryPager(this.context.query, this.context.type);
 		
-		const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+		const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);		
 		if(this.context.type === Type.Feed.Videos) {
-			pager.results = pager.results.filter(e => e.duration <= 0 || e.duration > shortContentThreshold);
+			// Only apply this filter to media content type
+			pager.results = pager.results.filter(e => e.contentType != MEDIA_CONTENT_TYPE || (e.duration <= 0 || e.duration > shortContentThreshold));
 		}
 
 		return pager;
@@ -915,10 +920,31 @@ function claimSearch(query) {
 		throw "Failed to search claims\n" + resp.body;
 	const result = JSON.parse(resp.body);
 	const items = result.result.items;
-	const media_stream_types = ['audio','video'];
+	const media_stream_types = ['audio', 'video'];
 	const docs_stream_types = ['document'];
+	const unsupported_doc_types = ['application/pdf']
 	let media = items.filter(z => media_stream_types.includes(z.value.stream_type)).map((x) => lbryVideoToPlatformVideo(x));
-	let documents = items.filter(z => docs_stream_types.includes(z.value.stream_type)).map(x => lbryDocumentToPlatformPost(x));
+
+	let documents = [];
+
+	let documents_body_batch_request = http.batch();
+
+	const document_stream_types = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type) && !unsupported_doc_types.includes(z.value.source.media_type) );
+	if (document_stream_types.length) {
+		document_stream_types.forEach(lbry => {
+			const sdHash = lbry.value?.source?.sd_hash;
+			const sdHashPrefix = sdHash.substring(0, 6);
+			documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd)
+		});
+
+		let documents_response = documents_body_batch_request.execute();
+
+		documents = document_stream_types.map((x, index) => {
+			const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
+			return lbryDocumentToPlatformPost(x, postContent);
+		});
+	}
+
 	return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
 }
 
@@ -926,18 +952,17 @@ function resolveClaimsChannel(claims) {
 	if (!Array.isArray(claims) || claims.length === 0)
 		return [];
 	const results = resolveClaims(claims);
-	const batch = http.batch();
-
+	
 	// getsub count using batch request
-	results.forEach(claim => {
-		batch.POST(
-			`${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
-			`auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
-			{ 'Content-Type': 'application/x-www-form-urlencoded' }
-		);
+	const requests = results.map(claim => {
+		return {
+			url: URL_API_SUB_COUNT,
+			body: `auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		};
 	});
 
-	const responses = batch.execute();
+	const responses = batchRequest(requests, { useStateCache: true });
 
 	const responseMap = responses.reduce((map, resp) => {
 		try {
@@ -1088,9 +1113,8 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 
 	const {
 		rating, 
-		viewCount, 
 		subCount
-	} = lbryToMetrics(lbry);
+	} = lbryToMetrics(lbry, { loadViewCount : false });
 
 	return new PlatformPostDetails({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
@@ -1099,7 +1123,6 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 		datetime: lbryVideoToDateTime(lbry),
 		url: lbry.permanent_url,
 		rating: rating,
-		viewCount,
 		textType: Type.Text.HTML,
 		content: markdownToHtml(postContent),
 		images: [lbry.value?.thumbnail?.url], //TODO: extract other images
@@ -1319,9 +1342,15 @@ function lbryToDuration(lbry){
 	return lbry.value?.video?.duration ?? lbry.value?.audio?.duration ?? 0;
 }
 
-function lbryToMetrics(lbry) {
+function lbryToMetrics(lbry, opts) {
 
 	const claimId = lbry.claim_id;
+
+	if(!opts) {
+		opts = {
+			loadViewCount : false
+		}
+	}
 
 	let rating = null;
 	let viewCount = 0;
@@ -1333,15 +1362,28 @@ function lbryToMetrics(lbry) {
 
 	const authToken = localState.auth_token;
 
-	// Execute batch HTTP requests for metadata
-	const batchResponses = http
-		.batch()
-		.POST(URL_REACTIONS, `auth_token=${authToken}&claim_ids=${claimId}`, formHeaders)
-		.POST(URL_VIEW_COUNT, `auth_token=${authToken}&claim_id=${claimId}`, formHeaders)
-		.POST(URL_API_SUB_COUNT, lbry.signing_channel?.claim_id ? `auth_token=${authToken}&claim_id=${lbry.signing_channel?.claim_id}` : '', formHeaders)
-		.execute();
+	const requests = [
+		{
+			url: URL_REACTIONS,
+            headers: formHeaders,
+			body: `auth_token=${authToken}&claim_ids=${claimId}`
+		}, 
+		{
+			url: URL_API_SUB_COUNT,
+			headers: formHeaders,
+			body: lbry.signing_channel?.claim_id ? `auth_token=${authToken}&claim_id=${lbry.signing_channel?.claim_id}` : ''
+		}
+	]
 
-	const [reactionResp, viewCountResp, subCountResp] = batchResponses;
+	if(opts.loadViewCount) {
+		requests.push({
+			url: URL_VIEW_COUNT,
+			headers: formHeaders,
+			body:  `auth_token=${authToken}&claim_id=${claimId}`
+		})
+	}
+	
+	const [reactionResp, subCountResp, viewCountResp] = batchRequest(requests, { useStateCache: true });
 
 	// Process reaction response
 	if (reactionResp?.isOk) {
@@ -1354,7 +1396,7 @@ function lbryToMetrics(lbry) {
 	}
 
 	// Process view count response
-	if (viewCountResp?.isOk) {
+	if (opts.loadViewCount && viewCountResp?.isOk) {
 		const viewCountObj = JSON.parse(viewCountResp.body);
 		if (viewCountObj?.success && viewCountObj?.data) {
 			viewCount = viewCountObj.data[0] ?? 0;
@@ -1615,6 +1657,108 @@ function sanitizeUrl(url) {
 function loadOptionsForSetting(settingKey) {
 	return localConfig?.settings?.find((s) => s.variable == settingKey)
 	  ?.options ?? [];
+}
+
+
+/**
+ * Executes multiple HTTP requests in a batch with optional caching
+ * @param {Array} requests - Array of request objects
+ * @param {Object} opts - Options object
+ * @param {boolean} [opts.useStateCache=false] - Whether to use state caching
+ * @returns {Array} - Array of responses corresponding to the requests
+ */
+function batchRequest(requests, opts = {}) {
+    // Default to using cache if not specified
+    const useStateCache = opts.useStateCache !== undefined ? opts.useStateCache : false;
+    
+    // Initialize cache if it doesn't exist
+    if (!localState.batch_response_cache) {
+        localState.batch_response_cache = {};
+    }
+    
+    let batch = http.batch();
+    let cacheHits = {};
+    let batchRequestIndices = [];
+    let batchRequestCount = 0;
+    
+    // First pass: identify cache hits and prepare batch for non-cached requests
+    for (let i = 0; i < requests.length; i++) {
+        const request = requests[i];
+        
+        // Validate request
+        if (!request.url) {
+            throw new ScriptException('An HTTP request must have a URL');
+        }
+        
+        // Determine method and create request key
+        const hasBody = !!request.body;
+        const method = request.method || (hasBody ? 'POST' : 'GET');
+        const requestKey = hasBody ?
+            `${method}${request.url}${JSON.stringify(request.body)}` :
+            `${method}${request.url}`;
+        
+        // Store the request key for later use
+        request.requestKey = requestKey;
+        
+        // Check cache if caching is enabled
+        if (useStateCache && localState.batch_response_cache[requestKey]) {
+            cacheHits[i] = localState.batch_response_cache[requestKey];
+        } else {
+            // Add to batch if not in cache or caching is disabled
+            if (!hasBody) {
+                batch = batch.request(
+                    method,
+                    request.url,
+                    request.headers || {},
+                    request.auth || false
+                );
+            } else {
+                batch = batch.requestWithBody(
+                    method,
+                    request.url,
+                    request.body,
+                    request.headers || {},
+                    request.auth || false
+                );
+            }
+            // Map the original request index to the batch index
+            batchRequestIndices[batchRequestCount] = i;
+            batchRequestCount++;
+        }
+    }
+    
+    // Execute batch request only if there are non-cached requests
+    let batchResponses = [];
+    if (batchRequestCount > 0) {
+        try {
+            batchResponses = batch.execute();
+        } catch (error) {
+            throw new ScriptException(`Batch execution failed: ${error.message}`);
+        }
+    }
+    
+    // Prepare final response array
+    const finalResponses = new Array(requests.length);
+    
+    // Add cache hits to final responses
+    for (const [index, response] of Object.entries(cacheHits)) {
+        finalResponses[parseInt(index)] = response;
+    }
+    
+    // Add batch responses to final responses and update cache
+    for (let i = 0; i < batchResponses.length; i++) {
+        const originalIndex = batchRequestIndices[i];
+        const response = batchResponses[i];
+        finalResponses[originalIndex] = response;
+        
+        // Update cache with new responses if caching is enabled
+        if (useStateCache) {
+            const requestKey = requests[originalIndex].requestKey;
+            localState.batch_response_cache[requestKey] = response;
+        }
+    }
+    
+    return finalResponses;
 }
 
 
