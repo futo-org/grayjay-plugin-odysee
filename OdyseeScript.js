@@ -270,15 +270,17 @@ source.getChannelContents = function (url, type) {
             ]);
             
         case Type.Feed.Shorts:
-            // For shorts, only get short videos
-            return getQueryPager({
-                ...baseQuery,
-                stream_types: ["video"],
-                duration: [
-                    '>=0',
-                    `<${shortContentThreshold}`
-                ]
-            }, type);
+            // For shorts, use the working format from the example
+            return createMultiSourcePager([
+                {
+                    // Short videos only - using just the upper bound
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["video"],
+                        duration: [`<=${shortContentThreshold}`]
+                    }
+                }
+            ]).nextPage();
             
         case Type.Feed.Mixed:
             // For mixed feed, combine everything
@@ -741,9 +743,9 @@ function getOdyseeContentData() {
 
 	return contentResp.data["en"];
 }
-function getQueryPager(query, type) {
+function getQueryPager(query) {
 	const initialResults = claimSearch(query);
-	return new QueryPager(query, initialResults, type);
+	return new QueryPager(query, initialResults);
 }
 function getSearchPagerVideos(query, nsfw = false, maxRetry = 0, channelId = null, sortBy = null, timeFilter = null) {
 	const pageSize = 10;
@@ -759,23 +761,14 @@ function getSearchPagerChannels(query, nsfw = false) {
 
 //Pagers
 class QueryPager extends VideoPager {
-	constructor(query, results, type) {
+	constructor(query, results) {
 		// updated Hasmore condition since some unsupported content types may be hidden and would break the pagination
-		super(results, !!results.length, { query, type });
+		super(results, !!results.length, { query });
 	}
 
 	nextPage() {
 		this.context.query.page = (this.context.query.page || 0) + 1;
-
-		const pager = getQueryPager(this.context.query, this.context.type);
-
-		const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
-		if(this.context.type === Type.Feed.Videos) {
-			// Only apply this filter to media content type
-			pager.results = pager.results.filter(e => e.contentType != MEDIA_CONTENT_TYPE || (e.duration <= 0 || e.duration > shortContentThreshold));
-		}
-
-		return pager;
+		return getQueryPager(this.context.query);
 	}
 }
 function getPlaylists(channelId, nextPageToLoad, pageSize) {
@@ -965,44 +958,192 @@ function searchClaims(search, from, size, type = "file", nsfw = false, maxRetry 
 	return claimUrls;
 }
 
+/**
+ * Converts LBRY claim search results to platform content objects
+ * @param {Array} items - The items returned from a claim_search API call
+ * @returns {Array} Array of platform content objects (videos, audio, documents)
+ */
+function claimSearchItemsToPlatformContent(items) {
+    // Define stream types to process
+    const media_stream_types = ['audio', 'video'];
+    const docs_stream_types = ['document'];
+    
+    // Process media types (audio, video)
+    let media = items
+        .filter(z => z.value && media_stream_types.includes(z.value.stream_type))
+        .map(x => lbryVideoToPlatformVideo(x));
+    
+    // Process documents
+    let documents = [];
+    let documentItems = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type));
+    
+    if (documentItems.length) {
+        // Separate PDFs and other document types
+        const pdfItems = documentItems.filter(z => 
+            z.value.source && 
+            z.value.source.media_type && 
+            z.value.source.media_type === 'application/pdf'
+        );
+        
+        const otherDocItems = documentItems.filter(z => 
+            !z.value.source || 
+            !z.value.source.media_type || 
+            z.value.source.media_type !== 'application/pdf'
+        );
+        
+        // Process PDFs to create HTML content
+        const pdfDocs = pdfItems.map(item => {
+            return lbryPdfToPlatformPost(item);
+        });
+        
+        // Process other document types normally
+        let documents_body_batch_request = http.batch();
+        otherDocItems.forEach(lbry => {
+            const sdHash = lbry.value?.source?.sd_hash;
+            if (sdHash) {
+                const sdHashPrefix = sdHash.substring(0, 6);
+                documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+            }
+        });
+        
+        let otherDocs = [];
+        if (otherDocItems.length > 0) {
+            let documents_response = documents_body_batch_request.execute();
+            otherDocs = otherDocItems.map((x, index) => {
+                if (x.value?.source?.sd_hash) {
+                    const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
+                    return lbryDocumentToPlatformPost(x, postContent);
+                }
+                // If there's no sd_hash, return an empty document with error message
+                return lbryDocumentToPlatformPost(x, "Content unavailable");
+            });
+        }
+        
+        // Combine all document types
+        documents = [...pdfDocs, ...otherDocs];
+    }
+    
+    // Combine all results and sort by date
+    return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
+}
+
+/**
+ * Updated claimSearch function that handles PDFs by creating HTML content with a PDF viewer link
+ */
 function claimSearch(query) {
-	const body = JSON.stringify({
-		method: "claim_search",
-		params: query
-	});
-	const resp = http.POST(URL_CLAIM_SEARCH, body, {
-		"Content-Type": "application/json"
-	});
-	if (resp.code >= 300)
-		throw "Failed to search claims\n" + resp.body;
-	const result = JSON.parse(resp.body);
-	const items = result.result.items;
-	const media_stream_types = ['audio', 'video'];
-	const docs_stream_types = ['document'];
-	const unsupported_doc_types = ['application/pdf']
-	let media = items.filter(z => media_stream_types.includes(z.value.stream_type)).map((x) => lbryVideoToPlatformVideo(x));
+    const body = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "claim_search",
+        params: query,
+        id: Date.now()
+    });
+    
+    const resp = http.POST(URL_CLAIM_SEARCH, body, {
+        "Content-Type": "application/json"
+    });
+    
+    if (resp.code >= 300)
+        throw new ScriptException("Failed to search claims\n" + resp.body);
+    
+    const result = JSON.parse(resp.body);
+    const items = result.result.items;
+    
+    // Define stream types to process
+    const media_stream_types = ['audio', 'video'];
+    const docs_stream_types = ['document'];
+    
+    // Process media types (audio, video)
+    let media = items
+        .filter(z => z.value && media_stream_types.includes(z.value.stream_type))
+        .map(x => lbryVideoToPlatformVideo(x));
+    
+    // Process documents
+    let documents = [];
+    let documentItems = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type));
+    
+    if (documentItems.length) {
+        // Separate PDFs and other document types
+        const pdfItems = documentItems.filter(z => z.value.source.media_type === 'application/pdf');
+        const otherDocItems = documentItems.filter(z => z.value.source.media_type !== 'application/pdf');
+        
+        // Process PDFs to create HTML content
+        const pdfDocs = pdfItems.map(item => {
+            return lbryPdfToPlatformPost(item);
+        });
+        
+        // Process other document types normally
+        let documents_body_batch_request = http.batch();
+        otherDocItems.forEach(lbry => {
+            const sdHash = lbry.value?.source?.sd_hash;
+            const sdHashPrefix = sdHash.substring(0, 6);
+            documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+        });
+        
+        let otherDocs = [];
+        if (otherDocItems.length > 0) {
+            let documents_response = documents_body_batch_request.execute();
+            otherDocs = otherDocItems.map((x, index) => {
+                const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
+                return lbryDocumentToPlatformPost(x, postContent);
+            });
+        }
+        
+        // Combine all document types
+        documents = [...pdfDocs, ...otherDocs];
+    }
+    
+    // Combine all results and sort by date
+    return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
+}
 
-	let documents = [];
-
-	let documents_body_batch_request = http.batch();
-
-	const document_stream_types = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type) && !unsupported_doc_types.includes(z.value.source.media_type));
-	if (document_stream_types.length) {
-		document_stream_types.forEach(lbry => {
-			const sdHash = lbry.value?.source?.sd_hash;
-			const sdHashPrefix = sdHash.substring(0, 6);
-			documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd)
-		});
-
-		let documents_response = documents_body_batch_request.execute();
-
-		documents = document_stream_types.map((x, index) => {
-			const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
-			return lbryDocumentToPlatformPost(x, postContent);
-		});
-	}
-
-	return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
+/**
+ * Converts a PDF document to a platform post with an embedded viewer
+ * @param {Object} lbry - The LBRY claim object for a PDF file
+ * @returns {PlatformPostDetails} Platform post with embedded PDF viewer
+ */
+function lbryPdfToPlatformPost(lbry) {
+    const shareUrl = lbry.signing_channel?.claim_id !== undefined
+        ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+        : format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
+    
+    const claimId = lbry.claim_id;
+    const name = lbry.name;
+    const sdHash = lbry.value?.source?.sd_hash;
+	const sdHashPrefix = sdHash.substring(0, 6);
+    
+    // Create a direct download URL for the PDF
+    const pdfUrl = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`;
+    
+    // Create HTML content with PDF viewer and download link
+    const htmlContent = `
+        <div>
+            <p>This document is a PDF file. You can:</p>
+            <p>
+                <a href="${pdfUrl}" target="_blank" style="display: inline-block; background-color: #2196F3; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px; margin-right: 10px;">
+                    <strong>View/Download PDF</strong>
+                </a>
+            </p>
+        </div>
+    `;
+    
+    const {
+        rating,
+        subCount
+    } = lbryToMetrics(lbry, { loadViewCount: false });
+    
+    return new PlatformPostDetails({
+        id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+        name: lbry.value?.title ?? name,
+        author: channelToPlatformAuthorLink(lbry, subCount),
+        datetime: lbryVideoToDateTime(lbry),
+        url: lbry.permanent_url,
+        rating: rating,
+        textType: Type.Text.HTML,
+        content: htmlContent,
+        images: [lbry.value?.thumbnail?.url],
+        thumbnails: [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])],
+        shareUrl
+    });
 }
 
 function resolveClaimsChannel(claims) {
@@ -1837,7 +1978,7 @@ function createMultiSourcePager(sourcesConfig = []) {
             // Create a unique identifier for this source based on the request parameters
             const streamTypes = sourceConfig.request_body.stream_types || ["all"];
             const sourceId = `source_${streamTypes.join('_')}_${Date.now() + Math.random()}`;
-            
+
             if (!this.contexts[sourceId]) {
                 // Initialize context for this source if it doesn't exist
                 this.contexts[sourceId] = {
@@ -1900,7 +2041,7 @@ function createMultiSourcePager(sourcesConfig = []) {
             const allNewVideos = [];
             let hasMoreOverall = false;
             const newGlobalSeenVideoIds = new Set(this.globalSeenVideoIds);
-            
+
             for (let i = 0; i < sourcesToFetch.length; i++) {
                 const { sourceId, context, updatedRequestBody } = sourcesToFetch[i];
                 const res = responses[i];
