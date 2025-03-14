@@ -214,46 +214,103 @@ source.getChannelCapabilities = () => {
 }
 
 source.getChannelContents = function (url, type) {
-	let { id: channel_id } = parseChannelUrl(url)
-
-	if (channel_id.length !== CLAIM_ID_LENGTH) {
-		const platform_channel = source.getChannel(url)
-		channel_id = platform_channel.id.value
-	}
-
-	let query = {
-		channel_ids: [channel_id],
-		page: 1,
-		page_size: 8,
-		claim_type: [CLAIM_TYPE_STREAM , CLAIM_TYPE_REPOST],
-		order_by: [ORDER_BY_RELEASETIME],
-		// has_source: true
-	}
-
-	const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
-
-	switch(type) {
-		case undefined:
-		case null:
-		case "":
-		case Type.Feed.Videos:
-			// query.duration = [
-			// 	'>60'
-			// ]			
-			break;
-		case Type.Feed.Shorts:
-			query.duration = [
-				'>=0',
-				`<=${shortContentThreshold}`
-			]
-			break;
-		default:
-			throw new ScriptException("Unsupported type: " + type);
-	}
-
-	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS }, type);
-
+    let { id: channel_id } = parseChannelUrl(url)
+    if (channel_id.length !== CLAIM_ID_LENGTH) {
+        const platform_channel = source.getChannel(url)
+        channel_id = platform_channel.id.value
+    }
+    
+    const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+    
+    // Base query parameters common to all queries
+    const baseQuery = {
+        channel_ids: [channel_id],
+        claim_type: [CLAIM_TYPE_STREAM, CLAIM_TYPE_REPOST],
+        order_by: [ORDER_BY_RELEASETIME],
+        has_source: true,
+        release_time: `<${Math.floor(Date.now() / 1000)}`, // Add current timestamp as release_time upper bound
+        page: 1,
+        page_size: 8
+    };
+    
+    // Add mature content filter if needed
+    if (!localSettings.allowMatureContent) {
+        baseQuery.not_tags = MATURE_TAGS;
+    }
+    
+    switch(type) {
+        case undefined:
+        case null:
+        case "":
+        case Type.Feed.Videos:
+            // For regular content (not shorts)
+            return createMultiSourcePager([
+                {
+                    // Videos longer than threshold
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["video"],
+                        duration: [`>${shortContentThreshold}`]
+                    }
+                },
+                {
+                    // All audio content (no duration filtering)
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["audio"]
+                    }
+                },
+                {
+                    // All document content (no duration filtering)
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["document"]
+                    }
+                }
+            ]);
+            
+        case Type.Feed.Shorts:
+            // For shorts, only get short videos
+            return getQueryPager({
+                ...baseQuery,
+                stream_types: ["video"],
+                duration: [
+                    '>=0',
+                    `<${shortContentThreshold}`
+                ]
+            }, type);
+            
+        case Type.Feed.Mixed:
+            // For mixed feed, combine everything
+            return createMultiSourcePager([
+                {
+                    // All videos (no duration filter)
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["video"]
+                    }
+                },
+                {
+                    // All audio
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["audio"]
+                    }
+                },
+                {
+                    // All documents
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["document"]
+                    }
+                }
+            ]);
+            
+        default:
+            throw new ScriptException("Unsupported type: " + type);
+    }
 };
+
 source.getChannelPlaylists = function (url) {
 	let { id: channel_id } = parseChannelUrl(url)
 
@@ -334,7 +391,7 @@ source.getContentRecommendations = (url, initialData) => {
 		claim_id = result.claim_id;
 		query = result.value.title;
 	}
-	
+
 	const params = objectToUrlEncodedString({
 		s: query,
 		related_to: claim_id,
@@ -703,16 +760,16 @@ function getSearchPagerChannels(query, nsfw = false) {
 //Pagers
 class QueryPager extends VideoPager {
 	constructor(query, results, type) {
-		// updated Masmore condition since some unsupported content types may be hidden and would break the pagination
+		// updated Hasmore condition since some unsupported content types may be hidden and would break the pagination
 		super(results, !!results.length, { query, type });
 	}
 
 	nextPage() {
 		this.context.query.page = (this.context.query.page || 0) + 1;
-		
+
 		const pager = getQueryPager(this.context.query, this.context.type);
-		
-		const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);		
+
+		const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
 		if(this.context.type === Type.Feed.Videos) {
 			// Only apply this filter to media content type
 			pager.results = pager.results.filter(e => e.contentType != MEDIA_CONTENT_TYPE || (e.duration <= 0 || e.duration > shortContentThreshold));
@@ -929,7 +986,7 @@ function claimSearch(query) {
 
 	let documents_body_batch_request = http.batch();
 
-	const document_stream_types = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type) && !unsupported_doc_types.includes(z.value.source.media_type) );
+	const document_stream_types = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type) && !unsupported_doc_types.includes(z.value.source.media_type));
 	if (document_stream_types.length) {
 		document_stream_types.forEach(lbry => {
 			const sdHash = lbry.value?.source?.sd_hash;
@@ -952,7 +1009,7 @@ function resolveClaimsChannel(claims) {
 	if (!Array.isArray(claims) || claims.length === 0)
 		return [];
 	const results = resolveClaims(claims);
-	
+
 	// getsub count using batch request
 	const requests = results.map(claim => {
 		return {
@@ -1112,7 +1169,7 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 	}
 
 	const {
-		rating, 
+		rating,
 		subCount
 	} = lbryToMetrics(lbry, { loadViewCount : false });
 
@@ -1139,161 +1196,161 @@ function format_odysee_share_url(channel_name, channel_claim_id, video_name, vid
 }
 //Convert an LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
-    
-    const sdHash = lbry.value?.source?.sd_hash;
-    const claimId = lbry.claim_id;
-    const videoHeight = lbry.value?.video?.height ?? 0;
-    const videoWidth = lbry.value?.video?.width ?? 0;
-    const streamType = lbry.value?.stream_type;
-    const mediaType = lbry.value?.source?.media_type;
-    const name = lbry.name;
-    let video = null;
 
-    // Helper function to get video duration
-    const getVideoDuration = () => lbryToDuration(lbry);
+	const sdHash = lbry.value?.source?.sd_hash;
+	const claimId = lbry.claim_id;
+	const videoHeight = lbry.value?.video?.height ?? 0;
+	const videoWidth = lbry.value?.video?.width ?? 0;
+	const streamType = lbry.value?.stream_type;
+	const mediaType = lbry.value?.source?.media_type;
+	const name = lbry.name;
+	let video = null;
 
-    if (!sdHash) {
-        // Handle case with no sdHash
-        if (streamType === 'video') {
-            // Legacy URL format without sdHash
-            video = new VideoSourceDescriptor([
-                new VideoUrlSource({
-                    name: `Original ${videoHeight}P`,
-                    url: `https://cdn.lbryplayer.xyz/content/claims/${name}/${claimId}/stream`,
-                    width: videoWidth,
-                    height: videoHeight,
-                    duration: getVideoDuration(),
-                    container: mediaType ?? "",
-                    requestModifier: { headers: headersToAdd }
-                })
-            ]);
-        } else if (lbry.value?.video === undefined) {
-            throw new UnavailableException("Odysee live streams are not currently supported");
-        }
-    } else {
-        // With sdHash present, handle both audio and video
-        if (streamType === 'audio') {
-            const audioUrl = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}.mp4`;
-            const sources = [
-                new AudioUrlSource({
-                    name: mediaType,
-                    url: audioUrl,
-                    container: mediaType,
-                    duration: getVideoDuration(),
-                    requestModifier: { headers: headersToAdd }
-                })
-            ];
-            video = new UnMuxVideoSourceDescriptor([], sources);
-        }
-        else if (streamType === 'video') {
-            const sources = [];
-            const sdHashPrefix = sdHash.substring(0, 6);
-            
-            // Try HLS v6 first
-            const hlsUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}/master.m3u8`;
-            const hlsResponseV6 = http.GET(hlsUrlV6, headersToAdd);
-            
-            if (hlsResponseV6.isOk && hlsResponseV6.body) {
-                sources.push(new HLSSource({
-                    name: "HLS (v6)",
-                    url: hlsUrlV6,
-                    duration: getVideoDuration(),
-                    priority: true,
-                    requestModifier: { headers: headersToAdd }
-                }));
-            } else {
-                // Fallback to HLS v4
-                const hlsUrlV4 = `https://player.odycdn.com/api/v4/streams/tc/${name}/${claimId}/${sdHash}/master.m3u8`;
-                const hlsResponseV4 = http.GET(hlsUrlV4, headersToAdd);
-                if (hlsResponseV4.isOk && hlsResponseV4.body) {
-                    sources.push(new HLSSource({
-                        name: "HLS",
-                        url: hlsUrlV4,
-                        duration: getVideoDuration(),
-                        priority: true,
-                        requestModifier: { headers: headersToAdd }
-                    }));
-                }
-            }
-            
-            // Try direct mp4 v6 first
-            const downloadUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHashPrefix}.mp4`;
-            const rangeHeaders = { "Range": "bytes=0-10", ...headersToAdd };
-            
-            console.log("downloadUrl2", downloadUrlV6);
-            const downloadResponseV6 = http.GET(downloadUrlV6, rangeHeaders);
-            
-            if (downloadResponseV6.isOk) {
-                sources.push(new VideoUrlSource({
-                    name: `Original ${videoHeight}P (v6)`,
-                    url: downloadUrlV6,
-                    width: videoWidth,
-                    height: videoHeight,
-                    duration: getVideoDuration(),
-                    container: downloadResponseV6.headers["content-type"]?.[0] ?? "video/mp4",
-                    requestModifier: { headers: headersToAdd }
-                }));
-            } else {
-                // Fallback to direct mp4 v4
-                const downloadUrlV4 = `https://player.odycdn.com/api/v4/streams/free/${name}/${claimId}/${sdHashPrefix}`;
-                const downloadResponseV4 = http.GET(downloadUrlV4, { "Range": "bytes=0-0", ...headersToAdd });
-                
-                if (downloadResponseV4.isOk) {
-                    sources.push(new VideoUrlSource({
-                        name: `Original ${videoHeight}P (v4)`,
-                        url: downloadUrlV4,
-                        width: videoWidth,
-                        height: videoHeight,
-                        duration: getVideoDuration(),
-                        container: downloadResponseV4.headers["content-type"]?.[0] ?? "video/mp4",
-                        requestModifier: { headers: headersToAdd }
-                    }));
-                }
-            }
-            
-            if (sources.length === 0) {
-                throw new UnavailableException("Members Only Content Is Not Currently Supported");
-            }
-            
-            video = new VideoSourceDescriptor(sources);
-        }
-        else if (lbry.value?.video === undefined) {
-            throw new UnavailableException("Odysee live streams are not currently supported");
-        }
-    }
-    
-    if (IS_TESTING) {
-        console.log(lbry);
-    }
-    
+	// Helper function to get video duration
+	const getVideoDuration = () => lbryToDuration(lbry);
+
+	if (!sdHash) {
+		// Handle case with no sdHash
+		if (streamType === 'video') {
+			// Legacy URL format without sdHash
+			video = new VideoSourceDescriptor([
+				new VideoUrlSource({
+					name: `Original ${videoHeight}P`,
+					url: `https://cdn.lbryplayer.xyz/content/claims/${name}/${claimId}/stream`,
+					width: videoWidth,
+					height: videoHeight,
+					duration: getVideoDuration(),
+					container: mediaType ?? "",
+					requestModifier: { headers: headersToAdd }
+				})
+			]);
+		} else if (lbry.value?.video === undefined) {
+			throw new UnavailableException("Odysee live streams are not currently supported");
+		}
+	} else {
+		// With sdHash present, handle both audio and video
+		if (streamType === 'audio') {
+			const audioUrl = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}.mp4`;
+			const sources = [
+				new AudioUrlSource({
+					name: mediaType,
+					url: audioUrl,
+					container: mediaType,
+					duration: getVideoDuration(),
+					requestModifier: { headers: headersToAdd }
+				})
+			];
+			video = new UnMuxVideoSourceDescriptor([], sources);
+		}
+		else if (streamType === 'video') {
+			const sources = [];
+			const sdHashPrefix = sdHash.substring(0, 6);
+
+			// Try HLS v6 first
+			const hlsUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}/master.m3u8`;
+			const hlsResponseV6 = http.GET(hlsUrlV6, headersToAdd);
+
+			if (hlsResponseV6.isOk && hlsResponseV6.body) {
+				sources.push(new HLSSource({
+					name: "HLS (v6)",
+					url: hlsUrlV6,
+					duration: getVideoDuration(),
+					priority: true,
+					requestModifier: { headers: headersToAdd }
+				}));
+			} else {
+				// Fallback to HLS v4
+				const hlsUrlV4 = `https://player.odycdn.com/api/v4/streams/tc/${name}/${claimId}/${sdHash}/master.m3u8`;
+				const hlsResponseV4 = http.GET(hlsUrlV4, headersToAdd);
+				if (hlsResponseV4.isOk && hlsResponseV4.body) {
+					sources.push(new HLSSource({
+						name: "HLS",
+						url: hlsUrlV4,
+						duration: getVideoDuration(),
+						priority: true,
+						requestModifier: { headers: headersToAdd }
+					}));
+				}
+			}
+
+			// Try direct mp4 v6 first
+			const downloadUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHashPrefix}.mp4`;
+			const rangeHeaders = { "Range": "bytes=0-10", ...headersToAdd };
+
+			console.log("downloadUrl2", downloadUrlV6);
+			const downloadResponseV6 = http.GET(downloadUrlV6, rangeHeaders);
+
+			if (downloadResponseV6.isOk) {
+				sources.push(new VideoUrlSource({
+					name: `Original ${videoHeight}P (v6)`,
+					url: downloadUrlV6,
+					width: videoWidth,
+					height: videoHeight,
+					duration: getVideoDuration(),
+					container: downloadResponseV6.headers["content-type"]?.[0] ?? "video/mp4",
+					requestModifier: { headers: headersToAdd }
+				}));
+			} else {
+				// Fallback to direct mp4 v4
+				const downloadUrlV4 = `https://player.odycdn.com/api/v4/streams/free/${name}/${claimId}/${sdHashPrefix}`;
+				const downloadResponseV4 = http.GET(downloadUrlV4, { "Range": "bytes=0-0", ...headersToAdd });
+
+				if (downloadResponseV4.isOk) {
+					sources.push(new VideoUrlSource({
+						name: `Original ${videoHeight}P (v4)`,
+						url: downloadUrlV4,
+						width: videoWidth,
+						height: videoHeight,
+						duration: getVideoDuration(),
+						container: downloadResponseV4.headers["content-type"]?.[0] ?? "video/mp4",
+						requestModifier: { headers: headersToAdd }
+					}));
+				}
+			}
+
+			if (sources.length === 0) {
+				throw new UnavailableException("Members Only Content Is Not Currently Supported");
+			}
+
+			video = new VideoSourceDescriptor(sources);
+		}
+		else if (lbry.value?.video === undefined) {
+			throw new UnavailableException("Odysee live streams are not currently supported");
+		}
+	}
+
+	if (IS_TESTING) {
+		console.log(lbry);
+	}
+
 	const {
-		rating, 
-		viewCount, 
+		rating,
+		viewCount,
 		subCount
 	} = lbryToMetrics(lbry);
 
 
-    // Generate share URL
+	// Generate share URL
 	const shareUrl = lbry?.signing_channel?.claim_id
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel?.claim_id, name, claimId)
-        : format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
-    
-    // Return the final video details object
-    return new PlatformVideoDetails({
-        id: new PlatformID(PLATFORM, claimId, plugin.config.id),
-        name: lbry.value?.title ?? "",
-        thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-        author: channelToPlatformAuthorLink(lbry, subCount),
-        datetime: lbryVideoToDateTime(lbry),
-        duration: getVideoDuration(),
-        viewCount,
-        url: lbry.permanent_url,
-        shareUrl,
-        isLive: false,
-        description: lbry.value?.description ?? "",
-        rating,
-        video
-    });
+		: format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
+
+	// Return the final video details object
+	return new PlatformVideoDetails({
+		id: new PlatformID(PLATFORM, claimId, plugin.config.id),
+		name: lbry.value?.title ?? "",
+		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
+		author: channelToPlatformAuthorLink(lbry, subCount),
+		datetime: lbryVideoToDateTime(lbry),
+		duration: getVideoDuration(),
+		viewCount,
+		url: lbry.permanent_url,
+		shareUrl,
+		isLive: false,
+		description: lbry.value?.description ?? "",
+		rating,
+		video
+	});
 }
 
 const getAuthInfo = function () {
@@ -1365,9 +1422,9 @@ function lbryToMetrics(lbry, opts) {
 	const requests = [
 		{
 			url: URL_REACTIONS,
-            headers: formHeaders,
+			headers: formHeaders,
 			body: `auth_token=${authToken}&claim_ids=${claimId}`
-		}, 
+		},
 		{
 			url: URL_API_SUB_COUNT,
 			headers: formHeaders,
@@ -1382,7 +1439,7 @@ function lbryToMetrics(lbry, opts) {
 			body:  `auth_token=${authToken}&claim_id=${claimId}`
 		})
 	}
-	
+
 	const [reactionResp, subCountResp, viewCountResp] = batchRequest(requests, { useStateCache: true });
 
 	// Process reaction response
@@ -1418,15 +1475,15 @@ function lbryToMetrics(lbry, opts) {
 
 function objectToUrlEncodedString(obj) {
 	const encodedParams = [];
-  
+
 	for (const key in obj) {
-	  if (obj.hasOwnProperty(key)) {
-		const encodedKey = encodeURIComponent(key);
-		const encodedValue = encodeURIComponent(obj[key]);
-		encodedParams.push(`${encodedKey}=${encodedValue}`);
-	  }
+		if (obj.hasOwnProperty(key)) {
+			const encodedKey = encodeURIComponent(key);
+			const encodedValue = encodeURIComponent(obj[key]);
+			encodedParams.push(`${encodedKey}=${encodedValue}`);
+		}
 	}
-  
+
 	return encodedParams.join('&');
 }
 
@@ -1436,165 +1493,165 @@ function objectToUrlEncodedString(obj) {
  * @returns {string} The converted HTML
  */
 function markdownToHtml(markdown) {
-    if (!markdown) return '';
-    
-    // Preprocessing - normalize line endings
-    let html = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    
-    // First, escape all HTML to prevent injection attacks
-    html = escapeHtml(html);
-    
-    // Process code blocks (need to handle these first)
-    html = html.replace(/```([a-z]*)\n([\s\S]*?)\n```/g, function(match, language, code) {
-        return `<pre><code class="language-${language}">${code}</code></pre>`;
-    });
-    
-    // Process inline code (already escaped)
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    
-    // Process headings (# Heading, ## Heading, etc)
-    html = html.replace(/^(#{1,6})\s+(.*?)$/gm, function(match, hashes, content) {
-        const level = hashes.length;
-        return `<h${level}>${content.trim()}</h${level}>`;
-    });
-    
-    // Process bold (** or __)
-    html = html.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
-    
-    // Process italic (* or _)
-    html = html.replace(/(\*|_)(.*?)\1/g, '<em>$2</em>');
-    
-    // Process links [text](url) - with URL validation
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, text, url) {
-        // Validate and sanitize URLs
-        if (isValidUrl(url)) {
-            return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${text}</a>`;
-        } else {
-            return text; // If URL is invalid, just show the text
-        }
-    });
-    
-    // Process images ![alt](url) - with URL validation
-    html = html.replace(/!\[([^\]]+)\]\(([^)]+)\)/g, function(match, alt, url) {
-        if (isValidUrl(url)) {
-            return `<img src="${sanitizeUrl(url)}" alt="${alt}" loading="lazy">`;
-        } else {
-            return `[Image: ${alt}]`; // Fallback for invalid URLs
-        }
-    });
-    
-    // Process horizontal rules
-    html = html.replace(/^([-*_])\1\1+$/gm, '<hr>');
-    
-    // Process unordered lists
-    let inList = false;
-    let listHtml = '';
-    
-    html = html.split('\n').map(line => {
-        const listMatch = line.match(/^[\*\-\+]\s+(.*)$/);
-        if (listMatch) {
-            if (!inList) {
-                inList = true;
-                listHtml = '<ul>';
-            }
-            listHtml += `<li>${listMatch[1]}</li>`;
-            return null; // Mark for removal
-        } else if (inList && line.trim() === '') {
-            inList = false;
-            const result = listHtml + '</ul>';
-            listHtml = '';
-            return result;
-        } else if (inList) {
-            inList = false;
-            const result = listHtml + '</ul>';
-            listHtml = '';
-            return result + '\n' + line;
-        }
-        return line;
-    }).filter(line => line !== null).join('\n');
-    
-    // Clean up any remaining list
-    if (inList) {
-        html += listHtml + '</ul>';
-    }
-    
-    // Process ordered lists (similar approach to unordered lists)
-    inList = false;
-    listHtml = '';
-    
-    html = html.split('\n').map(line => {
-        const listMatch = line.match(/^\d+\.\s+(.*)$/);
-        if (listMatch) {
-            if (!inList) {
-                inList = true;
-                listHtml = '<ol>';
-            }
-            listHtml += `<li>${listMatch[1]}</li>`;
-            return null; // Mark for removal
-        } else if (inList && line.trim() === '') {
-            inList = false;
-            const result = listHtml + '</ol>';
-            listHtml = '';
-            return result;
-        } else if (inList) {
-            inList = false;
-            const result = listHtml + '</ol>';
-            listHtml = '';
-            return result + '\n' + line;
-        }
-        return line;
-    }).filter(line => line !== null).join('\n');
-    
-    // Clean up any remaining list
-    if (inList) {
-        html += listHtml + '</ol>';
-    }
-    
-    // Process blockquotes
-    html = html.replace(/^>\s+(.*)$/gm, '<blockquote>$1</blockquote>');
-    
-    // Process paragraphs (any text between blank lines that isn't a special element)
-    let inParagraph = false;
-    let paragraphContent = '';
-    
-    html = html.split('\n').map(line => {
-        if (line.trim() === '') {
-            if (inParagraph) {
-                inParagraph = false;
-                const result = `<p>${paragraphContent}</p>`;
-                paragraphContent = '';
-                return result;
-            }
-            return '';
-        } else if (line.startsWith('<') && !inParagraph) {
-            // Skip lines that already have HTML tags
-            return line;
-        } else {
-            if (!inParagraph) {
-                inParagraph = true;
-                paragraphContent = line;
-            } else {
-                paragraphContent += ' ' + line;
-            }
-            return null; // Mark for removal
-        }
-    }).filter(line => line !== null).join('\n');
-    
-    // Clean up any remaining paragraph
-    if (inParagraph) {
-        html += `<p>${paragraphContent}</p>`;
-    }
-    
-    // Process automatic links (bare URLs) with validation
-    html = html.replace(/(?<!["\(])(https?:\/\/[^\s<]+)(?!["\)])/g, function(match, url) {
-        if (isValidUrl(url)) {
-            return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${url}</a>`;
-        } else {
-            return url; // If URL is invalid, just show the text
-        }
-    });
-    
-    return html;
+	if (!markdown) return '';
+
+	// Preprocessing - normalize line endings
+	let html = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+	// First, escape all HTML to prevent injection attacks
+	html = escapeHtml(html);
+
+	// Process code blocks (need to handle these first)
+	html = html.replace(/```([a-z]*)\n([\s\S]*?)\n```/g, function(match, language, code) {
+		return `<pre><code class="language-${language}">${code}</code></pre>`;
+	});
+
+	// Process inline code (already escaped)
+	html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+	// Process headings (# Heading, ## Heading, etc)
+	html = html.replace(/^(#{1,6})\s+(.*?)$/gm, function(match, hashes, content) {
+		const level = hashes.length;
+		return `<h${level}>${content.trim()}</h${level}>`;
+	});
+
+	// Process bold (** or __)
+	html = html.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
+
+	// Process italic (* or _)
+	html = html.replace(/(\*|_)(.*?)\1/g, '<em>$2</em>');
+
+	// Process links [text](url) - with URL validation
+	html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, text, url) {
+		// Validate and sanitize URLs
+		if (isValidUrl(url)) {
+			return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${text}</a>`;
+		} else {
+			return text; // If URL is invalid, just show the text
+		}
+	});
+
+	// Process images ![alt](url) - with URL validation
+	html = html.replace(/!\[([^\]]+)\]\(([^)]+)\)/g, function(match, alt, url) {
+		if (isValidUrl(url)) {
+			return `<img src="${sanitizeUrl(url)}" alt="${alt}" loading="lazy">`;
+		} else {
+			return `[Image: ${alt}]`; // Fallback for invalid URLs
+		}
+	});
+
+	// Process horizontal rules
+	html = html.replace(/^([-*_])\1\1+$/gm, '<hr>');
+
+	// Process unordered lists
+	let inList = false;
+	let listHtml = '';
+
+	html = html.split('\n').map(line => {
+		const listMatch = line.match(/^[\*\-\+]\s+(.*)$/);
+		if (listMatch) {
+			if (!inList) {
+				inList = true;
+				listHtml = '<ul>';
+			}
+			listHtml += `<li>${listMatch[1]}</li>`;
+			return null; // Mark for removal
+		} else if (inList && line.trim() === '') {
+			inList = false;
+			const result = listHtml + '</ul>';
+			listHtml = '';
+			return result;
+		} else if (inList) {
+			inList = false;
+			const result = listHtml + '</ul>';
+			listHtml = '';
+			return result + '\n' + line;
+		}
+		return line;
+	}).filter(line => line !== null).join('\n');
+
+	// Clean up any remaining list
+	if (inList) {
+		html += listHtml + '</ul>';
+	}
+
+	// Process ordered lists (similar approach to unordered lists)
+	inList = false;
+	listHtml = '';
+
+	html = html.split('\n').map(line => {
+		const listMatch = line.match(/^\d+\.\s+(.*)$/);
+		if (listMatch) {
+			if (!inList) {
+				inList = true;
+				listHtml = '<ol>';
+			}
+			listHtml += `<li>${listMatch[1]}</li>`;
+			return null; // Mark for removal
+		} else if (inList && line.trim() === '') {
+			inList = false;
+			const result = listHtml + '</ol>';
+			listHtml = '';
+			return result;
+		} else if (inList) {
+			inList = false;
+			const result = listHtml + '</ol>';
+			listHtml = '';
+			return result + '\n' + line;
+		}
+		return line;
+	}).filter(line => line !== null).join('\n');
+
+	// Clean up any remaining list
+	if (inList) {
+		html += listHtml + '</ol>';
+	}
+
+	// Process blockquotes
+	html = html.replace(/^>\s+(.*)$/gm, '<blockquote>$1</blockquote>');
+
+	// Process paragraphs (any text between blank lines that isn't a special element)
+	let inParagraph = false;
+	let paragraphContent = '';
+
+	html = html.split('\n').map(line => {
+		if (line.trim() === '') {
+			if (inParagraph) {
+				inParagraph = false;
+				const result = `<p>${paragraphContent}</p>`;
+				paragraphContent = '';
+				return result;
+			}
+			return '';
+		} else if (line.startsWith('<') && !inParagraph) {
+			// Skip lines that already have HTML tags
+			return line;
+		} else {
+			if (!inParagraph) {
+				inParagraph = true;
+				paragraphContent = line;
+			} else {
+				paragraphContent += ' ' + line;
+			}
+			return null; // Mark for removal
+		}
+	}).filter(line => line !== null).join('\n');
+
+	// Clean up any remaining paragraph
+	if (inParagraph) {
+		html += `<p>${paragraphContent}</p>`;
+	}
+
+	// Process automatic links (bare URLs) with validation
+	html = html.replace(/(?<!["\(])(https?:\/\/[^\s<]+)(?!["\)])/g, function(match, url) {
+		if (isValidUrl(url)) {
+			return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${url}</a>`;
+		} else {
+			return url; // If URL is invalid, just show the text
+		}
+	});
+
+	return html;
 }
 
 /**
@@ -1603,12 +1660,12 @@ function markdownToHtml(markdown) {
  * @returns {string} The escaped text
  */
 function escapeHtml(text) {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+	return text
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#039;');
 }
 
 /**
@@ -1617,15 +1674,15 @@ function escapeHtml(text) {
  * @returns {boolean} Whether the URL is valid
  */
 function isValidUrl(url) {
-    // Basic URL validation
-    try {
-        const parsedUrl = new URL(url);
-        // Only allow http, https protocols (no javascript:, data:, etc.)
-        return ['http:', 'https:','lbry:'].includes(parsedUrl.protocol);
-    } catch (e) {
-        // If URL is malformed, consider it invalid
-        return false;
-    }
+	// Basic URL validation
+	try {
+		const parsedUrl = new URL(url);
+		// Only allow http, https protocols (no javascript:, data:, etc.)
+		return ['http:', 'https:','lbry:'].includes(parsedUrl.protocol);
+	} catch (e) {
+		// If URL is malformed, consider it invalid
+		return false;
+	}
 }
 
 /**
@@ -1634,29 +1691,29 @@ function isValidUrl(url) {
  * @returns {string} The sanitized URL
  */
 function sanitizeUrl(url) {
-    // Ensure URL is a string
-    url = String(url);
-    
-    try {
-        // Parse the URL to get components
-        const parsedUrl = new URL(url);
-        
-        // Check for potentially dangerous protocols
-        if (!['http:', 'https:','lbry:'].includes(parsedUrl.protocol)) {
-            return '#'; // Return harmless link
-        }
-        
-        // Return the original URL if it passed our checks
-        return url;
-    } catch (e) {
-        // If URL parsing fails, return a harmless link
-        return '#';
-    }
+	// Ensure URL is a string
+	url = String(url);
+
+	try {
+		// Parse the URL to get components
+		const parsedUrl = new URL(url);
+
+		// Check for potentially dangerous protocols
+		if (!['http:', 'https:','lbry:'].includes(parsedUrl.protocol)) {
+			return '#'; // Return harmless link
+		}
+
+		// Return the original URL if it passed our checks
+		return url;
+	} catch (e) {
+		// If URL parsing fails, return a harmless link
+		return '#';
+	}
 }
 
 function loadOptionsForSetting(settingKey) {
 	return localConfig?.settings?.find((s) => s.variable == settingKey)
-	  ?.options ?? [];
+		?.options ?? [];
 }
 
 
@@ -1668,97 +1725,286 @@ function loadOptionsForSetting(settingKey) {
  * @returns {Array} - Array of responses corresponding to the requests
  */
 function batchRequest(requests, opts = {}) {
-    // Default to using cache if not specified
-    const useStateCache = opts.useStateCache !== undefined ? opts.useStateCache : false;
-    
-    // Initialize cache if it doesn't exist
-    if (!localState.batch_response_cache) {
-        localState.batch_response_cache = {};
-    }
-    
-    let batch = http.batch();
-    let cacheHits = {};
-    let batchRequestIndices = [];
-    let batchRequestCount = 0;
-    
-    // First pass: identify cache hits and prepare batch for non-cached requests
-    for (let i = 0; i < requests.length; i++) {
-        const request = requests[i];
-        
-        // Validate request
-        if (!request.url) {
-            throw new ScriptException('An HTTP request must have a URL');
+	// Default to using cache if not specified
+	const useStateCache = opts.useStateCache !== undefined ? opts.useStateCache : false;
+
+	// Initialize cache if it doesn't exist
+	if (!localState.batch_response_cache) {
+		localState.batch_response_cache = {};
+	}
+
+	let batch = http.batch();
+	let cacheHits = {};
+	let batchRequestIndices = [];
+	let batchRequestCount = 0;
+
+	// First pass: identify cache hits and prepare batch for non-cached requests
+	for (let i = 0; i < requests.length; i++) {
+		const request = requests[i];
+
+		// Validate request
+		if (!request.url) {
+			throw new ScriptException('An HTTP request must have a URL');
+		}
+
+		// Determine method and create request key
+		const hasBody = !!request.body;
+		const method = request.method || (hasBody ? 'POST' : 'GET');
+		const requestKey = hasBody ?
+			`${method}${request.url}${JSON.stringify(request.body)}` :
+			`${method}${request.url}`;
+
+		// Store the request key for later use
+		request.requestKey = requestKey;
+
+		// Check cache if caching is enabled
+		if (useStateCache && localState.batch_response_cache[requestKey]) {
+			cacheHits[i] = localState.batch_response_cache[requestKey];
+		} else {
+			// Add to batch if not in cache or caching is disabled
+			if (!hasBody) {
+				batch = batch.request(
+					method,
+					request.url,
+					request.headers || {},
+					request.auth || false
+				);
+			} else {
+				batch = batch.requestWithBody(
+					method,
+					request.url,
+					request.body,
+					request.headers || {},
+					request.auth || false
+				);
+			}
+			// Map the original request index to the batch index
+			batchRequestIndices[batchRequestCount] = i;
+			batchRequestCount++;
+		}
+	}
+
+	// Execute batch request only if there are non-cached requests
+	let batchResponses = [];
+	if (batchRequestCount > 0) {
+		try {
+			batchResponses = batch.execute();
+		} catch (error) {
+			throw new ScriptException(`Batch execution failed: ${error.message}`);
+		}
+	}
+
+	// Prepare final response array
+	const finalResponses = new Array(requests.length);
+
+	// Add cache hits to final responses
+	for (const [index, response] of Object.entries(cacheHits)) {
+		finalResponses[parseInt(index)] = response;
+	}
+
+	// Add batch responses to final responses and update cache
+	for (let i = 0; i < batchResponses.length; i++) {
+		const originalIndex = batchRequestIndices[i];
+		const response = batchResponses[i];
+		finalResponses[originalIndex] = response;
+
+		// Update cache with new responses if caching is enabled
+		if (useStateCache) {
+			const requestKey = requests[originalIndex].requestKey;
+			localState.batch_response_cache[requestKey] = response;
+		}
+	}
+
+	return finalResponses;
+}
+
+function createMultiSourcePager(sourcesConfig = []) {
+    class MultiSourceVideoPager extends VideoPager {
+        constructor({
+            videos = [],
+            hasMore = true,
+            contexts = {},
+            currentSources = new Set(),
+            globalSeenVideoIds = new Set() // Track all unique videos across sources/pages
+        } = {}) {
+            super(videos, hasMore, { page: 0 });
+            this.contexts = contexts;
+            this.currentSources = currentSources;
+            this.globalSeenVideoIds = globalSeenVideoIds; // Global deduplication
         }
         
-        // Determine method and create request key
-        const hasBody = !!request.body;
-        const method = request.method || (hasBody ? 'POST' : 'GET');
-        const requestKey = hasBody ?
-            `${method}${request.url}${JSON.stringify(request.body)}` :
-            `${method}${request.url}`;
-        
-        // Store the request key for later use
-        request.requestKey = requestKey;
-        
-        // Check cache if caching is enabled
-        if (useStateCache && localState.batch_response_cache[requestKey]) {
-            cacheHits[i] = localState.batch_response_cache[requestKey];
-        } else {
-            // Add to batch if not in cache or caching is disabled
-            if (!hasBody) {
-                batch = batch.request(
-                    method,
-                    request.url,
-                    request.headers || {},
-                    request.auth || false
-                );
-            } else {
-                batch = batch.requestWithBody(
-                    method,
-                    request.url,
-                    request.body,
-                    request.headers || {},
-                    request.auth || false
-                );
+        addSource(sourceConfig) {
+            // Create a unique identifier for this source based on the request parameters
+            const streamTypes = sourceConfig.request_body.stream_types || ["all"];
+            const sourceId = `source_${streamTypes.join('_')}_${Date.now() + Math.random()}`;
+            
+            if (!this.contexts[sourceId]) {
+                // Initialize context for this source if it doesn't exist
+                this.contexts[sourceId] = {
+                    page: 1, // Start with page 1 for LBRY API
+                    page_size: sourceConfig.request_body.page_size || 20,
+                    config: sourceConfig,
+                    hasMore: true,
+                };
+                this.currentSources.add(sourceId);
             }
-            // Map the original request index to the batch index
-            batchRequestIndices[batchRequestCount] = i;
-            batchRequestCount++;
         }
-    }
-    
-    // Execute batch request only if there are non-cached requests
-    let batchResponses = [];
-    if (batchRequestCount > 0) {
-        try {
-            batchResponses = batch.execute();
-        } catch (error) {
-            throw new ScriptException(`Batch execution failed: ${error.message}`);
-        }
-    }
-    
-    // Prepare final response array
-    const finalResponses = new Array(requests.length);
-    
-    // Add cache hits to final responses
-    for (const [index, response] of Object.entries(cacheHits)) {
-        finalResponses[parseInt(index)] = response;
-    }
-    
-    // Add batch responses to final responses and update cache
-    for (let i = 0; i < batchResponses.length; i++) {
-        const originalIndex = batchRequestIndices[i];
-        const response = batchResponses[i];
-        finalResponses[originalIndex] = response;
         
-        // Update cache with new responses if caching is enabled
-        if (useStateCache) {
-            const requestKey = requests[originalIndex].requestKey;
-            localState.batch_response_cache[requestKey] = response;
+        nextPage() {
+            // Clone states to avoid mutation
+            const newContexts = {};
+            const newCurrentSources = new Set(this.currentSources);
+            for (const sourceId of this.currentSources) {
+                newContexts[sourceId] = { ...this.contexts[sourceId] };
+            }
+            
+            const batch = http.batch();
+            const sourcesToFetch = [];
+            
+            // Prepare batch requests for sources that have more content
+            for (const sourceId of newCurrentSources) {
+                const context = newContexts[sourceId];
+                if (!context.hasMore) continue;
+                
+                const { config } = context;
+                
+                // Create a new request body with updated pagination
+                const updatedRequestBody = {
+                    ...config.request_body,
+                    page: context.page,
+                    page_size: context.page_size
+                };
+                
+                const body = JSON.stringify({
+                    jsonrpc: "2.0",
+                    method: "claim_search",
+                    params: updatedRequestBody,
+                    id: Date.now() + Math.floor(Math.random() * 1000) // Unique ID for each request
+                });
+                
+                // Add to batch
+                batch.POST(URL_CLAIM_SEARCH, body, { "Content-Type": "application/json" });
+                sourcesToFetch.push({ sourceId, context, updatedRequestBody });
+            }
+            
+            // Execute batch requests if there are any
+            let responses = [];
+            if (sourcesToFetch.length > 0) {
+                responses = batch.execute();
+                if (responses.length !== sourcesToFetch.length) {
+                    throw new ScriptException("Batch response count mismatch");
+                }
+            }
+            
+            // Process responses and collect videos
+            const allNewVideos = [];
+            let hasMoreOverall = false;
+            const newGlobalSeenVideoIds = new Set(this.globalSeenVideoIds);
+            
+            for (let i = 0; i < sourcesToFetch.length; i++) {
+                const { sourceId, context, updatedRequestBody } = sourcesToFetch[i];
+                const res = responses[i];
+                
+                if (!res.isOk) {
+                    log(`Request failed for source ${sourceId}: ${res.code} - ${res.body}`);
+                    context.hasMore = false; // Stop trying this source
+                    continue;
+                }
+                
+                try {
+                    const responseBody = JSON.parse(res.body);
+                    
+                    // Check for errors in the response
+                    if (responseBody.error) {
+                        log(`API error for source ${sourceId}: ${JSON.stringify(responseBody.error)}`);
+                        context.hasMore = false;
+                        continue;
+                    }
+                    
+                    if (!responseBody.result || !responseBody.result.items) {
+                        log(`Unexpected response format for source ${sourceId}`);
+                        context.hasMore = false;
+                        continue;
+                    }
+                    
+                    // Get items from the response
+                    const items = responseBody.result.items;
+                    
+                    if (items.length === 0) {
+                        // No more items for this source
+                        context.hasMore = false;
+                        continue;
+                    }
+                    
+                    // Process items into platform content (videos, audio, documents)
+                    const processedContent = claimSearchItemsToPlatformContent(items);
+                    
+                    // Log information about the items for debugging
+                    if (processedContent.length === 0 && items.length > 0) {
+                        log(`Warning: No content processed from ${items.length} items for source ${sourceId}`);
+                        log(`Stream types in response: ${items.map(item => item.value?.stream_type).join(', ')}`);
+                    }
+                    
+                    // Filter out duplicates based on global seen IDs
+                    const filteredContent = [];
+                    for (const content of processedContent) {
+                        const contentId = content.id.value;
+                        if (!newGlobalSeenVideoIds.has(contentId)) {
+                            filteredContent.push(content);
+                            newGlobalSeenVideoIds.add(contentId);
+                        }
+                    }
+                    
+                    // Determine if this source has more pages
+                    const totalPages = responseBody.result.total_pages || 1;
+                    const currentPage = updatedRequestBody.page;
+                    const hasMoreForSource = currentPage < totalPages && items.length > 0;
+                    
+                    // Update context for next pagination
+                    context.page++;
+                    context.hasMore = hasMoreForSource;
+                    hasMoreOverall = hasMoreOverall || hasMoreForSource;
+                    
+                    // Add the filtered content to our results
+                    allNewVideos.push(...filteredContent);
+                    
+                } catch (error) {
+                    log(`Error processing response for source ${sourceId}: ${error.message}`);
+                    context.hasMore = false; // Stop trying this source on error
+                }
+            }
+            
+            // Sort videos by datetime (newest first) if they have datetime
+            if (allNewVideos.length > 0 && allNewVideos[0].datetime) {
+                allNewVideos.sort((a, b) => b.datetime - a.datetime);
+            }
+            
+            // If no sources have more content, mark as complete
+            if (!hasMoreOverall) {
+                return new MultiSourceVideoPager({
+                    videos: allNewVideos,
+                    hasMore: false,
+                    contexts: newContexts,
+                    currentSources: newCurrentSources,
+                    globalSeenVideoIds: newGlobalSeenVideoIds
+                });
+            }
+            
+            // Return a new pager with the updated state
+            return new MultiSourceVideoPager({
+                videos: allNewVideos,
+                hasMore: hasMoreOverall,
+                contexts: newContexts,
+                currentSources: newCurrentSources,
+                globalSeenVideoIds: newGlobalSeenVideoIds
+            });
         }
     }
     
-    return finalResponses;
+    // Initialize pager and add sources
+    const pager = new MultiSourceVideoPager();
+    sourcesConfig.forEach(config => pager.addSource(config));
+    return pager;
 }
 
 
