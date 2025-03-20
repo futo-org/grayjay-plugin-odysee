@@ -244,6 +244,7 @@ source.getChannelContents = function (url, type) {
         case "":
         case Type.Feed.Videos:
             // For regular content (not shorts)
+			// Doing this because some audios don't have duration. Filtering shorts out would filter them out if using the same request.
             return createMultiSourcePager([
                 {
                     // Videos longer than threshold
@@ -1294,39 +1295,62 @@ function lbryVideoToPlatformVideo(lbry) {
 
 function lbryDocumentToPlatformPost(lbry, postContent) {
 	const shareUrl = lbry.signing_channel?.claim_id !== undefined
-		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
-		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
-
+	  ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+	  : format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
+	
 	const sdHash = lbry.value?.source?.sd_hash;
 	const sdHashPrefix = sdHash.substring(0, 6);
-
+	
 	if (!postContent) {
-		// Odysee get the markdown content like this...
-		const res = http.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
-
-		if (res.isOk) {
-			postContent = res.body;
-		}
+	  // Odysee get the markdown content like this...
+	  const res = http.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+	  if (res.isOk) {
+		postContent = res.body;
+	  }
 	}
-
+	
+	let content;
+	const mediaType = lbry?.value?.source?.media_type;
+	
+	switch(mediaType) {
+	  case 'text/markdown':
+		content = markdownToHtml(postContent);
+		break;
+	  case 'text/plain':
+		content = postContent;
+		break;
+	  case 'text/html':
+		content = postContent; // Already HTML
+		break;
+	  default:
+		console.log(`Unhandled media type: ${mediaType}, treating as plain text`);
+		content = postContent;
+		break;
+	}
+	
 	const {
-		rating,
-		subCount
-	} = lbryToMetrics(lbry, { loadViewCount : false });
-
-	return new PlatformPostDetails({
-		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
-		name: lbry.value?.title ?? "",
-		author: channelToPlatformAuthorLink(lbry, subCount),
-		datetime: lbryVideoToDateTime(lbry),
-		url: lbry.permanent_url,
-		rating: rating,
-		textType: Type.Text.HTML,
-		content: markdownToHtml(postContent),
-		images: [lbry.value?.thumbnail?.url], //TODO: extract other images
-		thumbnails: [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])],
-		shareUrl
-	});
+	  rating,
+	  subCount
+	} = lbryToMetrics(lbry, { loadViewCount: false });
+	
+	const platformPostDef = {
+	  id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+	  name: lbry.value?.title ?? "",
+	  author: channelToPlatformAuthorLink(lbry, subCount),
+	  datetime: lbryVideoToDateTime(lbry),
+	  url: lbry.permanent_url,
+	  rating: rating,
+	  textType: Type.Text.HTML,
+	  content: content,
+	  shareUrl
+	};
+	
+	if(lbry.value?.thumbnail?.url) {
+	  platformPostDef.images = [lbry.value?.thumbnail?.url]; //TODO: extract other images
+	  platformPostDef.thumbnails = [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])];
+	}
+	
+	return new PlatformPostDetails(platformPostDef);
 }
 
 function format_odysee_share_url_anonymous(video_name, video_claim_id) {
