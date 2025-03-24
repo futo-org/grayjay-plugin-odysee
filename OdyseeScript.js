@@ -45,6 +45,17 @@ const headersToAdd = {
 	"Origin": "https://odysee.com"
 }
 
+const TEXT_DOC_TYPES = [
+    'text/plain',
+    'text/markdown',
+    'text/html',
+    'text/css',
+    'text/javascript',
+    'text/csv',
+    'text/xml',
+    'application/json'
+];
+
 //Source Method
 source.enable = function (config, settings, savedState) {
 	if (IS_TESTING) {
@@ -237,7 +248,7 @@ source.getChannelContents = function (url, type) {
     if (!localSettings.allowMatureContent) {
         baseQuery.not_tags = MATURE_TAGS;
     }
-    
+
     switch(type) {
         case undefined:
         case null:
@@ -271,7 +282,6 @@ source.getChannelContents = function (url, type) {
             ]);
             
         case Type.Feed.Shorts:
-            // For shorts, use the working format from the example
             return createMultiSourcePager([
                 {
                     // Short videos only - using just the upper bound
@@ -977,29 +987,28 @@ function claimSearchItemsToPlatformContent(items) {
     // Process documents
     let documents = [];
     let documentItems = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type));
-    
+
     if (documentItems.length) {
-        // Separate PDFs and other document types
-        const pdfItems = documentItems.filter(z => 
-            z.value.source && 
-            z.value.source.media_type && 
-            z.value.source.media_type === 'application/pdf'
+        // Separate text documents from binary documents
+        const textDocItems = documentItems.filter(z => 
+            z.value?.source?.media_type && 
+            TEXT_DOC_TYPES.includes(z.value.source.media_type)
         );
         
-        const otherDocItems = documentItems.filter(z => 
-            !z.value.source || 
-            !z.value.source.media_type || 
-            z.value.source.media_type !== 'application/pdf'
+        // All other document types are treated as binary
+        const binaryDocItems = documentItems.filter(z => 
+            !z.value?.source?.media_type || 
+            !TEXT_DOC_TYPES.includes(z.value.source.media_type)
         );
         
-        // Process PDFs to create HTML content
-        const pdfDocs = pdfItems.map(item => {
-            return lbryPdfToPlatformPost(item);
+        // Process binary documents with the binary handler
+        const binaryDocs = binaryDocItems.map(item => {
+            return lbryBinaryDocToPlatformPost(item);
         });
         
-        // Process other document types normally
+        // Process text document types normally
         let documents_body_batch_request = http.batch();
-        otherDocItems.forEach(lbry => {
+        textDocItems.forEach(lbry => {
             const sdHash = lbry.value?.source?.sd_hash;
             if (sdHash) {
                 const sdHashPrefix = sdHash.substring(0, 6);
@@ -1007,10 +1016,10 @@ function claimSearchItemsToPlatformContent(items) {
             }
         });
         
-        let otherDocs = [];
-        if (otherDocItems.length > 0) {
+        let textDocs = [];
+        if (textDocItems.length > 0) {
             let documents_response = documents_body_batch_request.execute();
-            otherDocs = otherDocItems.map((x, index) => {
+            textDocs = textDocItems.map((x, index) => {
                 if (x.value?.source?.sd_hash) {
                     const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
                     return lbryDocumentToPlatformPost(x, postContent);
@@ -1021,7 +1030,7 @@ function claimSearchItemsToPlatformContent(items) {
         }
         
         // Combine all document types
-        documents = [...pdfDocs, ...otherDocs];
+        documents = [...binaryDocs, ...textDocs];
     }
     
     // Combine all results and sort by date
@@ -1063,34 +1072,48 @@ function claimSearch(query) {
     let documentItems = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type));
     
     if (documentItems.length) {
-        // Separate PDFs and other document types
-        const pdfItems = documentItems.filter(z => z.value.source.media_type === 'application/pdf');
-        const otherDocItems = documentItems.filter(z => z.value.source.media_type !== 'application/pdf');
+        // Separate text documents from binary documents
+        const textDocItems = documentItems.filter(z => 
+            z.value?.source?.media_type && 
+            TEXT_DOC_TYPES.includes(z.value.source.media_type)
+        );
         
-        // Process PDFs to create HTML content
-        const pdfDocs = pdfItems.map(item => {
-            return lbryPdfToPlatformPost(item);
+        // All other document types are treated as binary
+        const binaryDocItems = documentItems.filter(z => 
+            !z.value?.source?.media_type || 
+            !TEXT_DOC_TYPES.includes(z.value.source.media_type)
+        );
+        
+        // Process binary documents with the binary handler
+        const binaryDocs = binaryDocItems.map(item => {
+            return lbryBinaryDocToPlatformPost(item);
         });
         
-        // Process other document types normally
+        // Process text document types normally
         let documents_body_batch_request = http.batch();
-        otherDocItems.forEach(lbry => {
+        textDocItems.forEach(lbry => {
             const sdHash = lbry.value?.source?.sd_hash;
-            const sdHashPrefix = sdHash.substring(0, 6);
-            documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+            if (sdHash) {
+                const sdHashPrefix = sdHash.substring(0, 6);
+                documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+            }
         });
         
-        let otherDocs = [];
-        if (otherDocItems.length > 0) {
+        let textDocs = [];
+        if (textDocItems.length > 0) {
             let documents_response = documents_body_batch_request.execute();
-            otherDocs = otherDocItems.map((x, index) => {
-                const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
-                return lbryDocumentToPlatformPost(x, postContent);
+            textDocs = textDocItems.map((x, index) => {
+                if (x.value?.source?.sd_hash) {
+                    const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
+                    return lbryDocumentToPlatformPost(x, postContent);
+                }
+                // If there's no sd_hash, return an empty document with error message
+                return lbryDocumentToPlatformPost(x, "Content unavailable");
             });
         }
         
         // Combine all document types
-        documents = [...pdfDocs, ...otherDocs];
+        documents = [...binaryDocs, ...textDocs];
     }
     
     // Combine all results and sort by date
@@ -1098,32 +1121,31 @@ function claimSearch(query) {
 }
 
 /**
- * Converts a PDF document to a platform post with an embedded viewer
+ * Converts binary documents to a platform post with an embedded viewer
  * @param {Object} lbry - The LBRY claim object for a PDF file
  * @returns {PlatformPostDetails} Platform post with embedded PDF viewer
  */
-function lbryPdfToPlatformPost(lbry) {
+function lbryBinaryDocToPlatformPost(lbry) {
+	
+	const claimId = lbry.claim_id;
+	const name = lbry.name;
+
     const shareUrl = lbry.signing_channel?.claim_id !== undefined
-        ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
-        : format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
+        ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, name, claimId)
+        : format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
     
-    const claimId = lbry.claim_id;
-    const name = lbry.name;
     const sdHash = lbry.value?.source?.sd_hash;
-	const sdHashPrefix = sdHash.substring(0, 6);
+    const sdHashPrefix = sdHash ? sdHash.substring(0, 6) : "";
     
-    // Create a direct download URL for the PDF
-    const pdfUrl = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`;
+    // Create a direct download URL for the document
+    const downloadUrl = `https://player.odycdn.com/v6/streams/${claimId}/${sdHashPrefix}.mp4`;
     
-    // Create HTML content with PDF viewer and download link
+    // Create HTML content with download link
     const htmlContent = `
         <div>
-            <p>This document is a PDF file. You can:</p>
-            <p>
-                <a href="${pdfUrl}" target="_blank" style="display: inline-block; background-color: #2196F3; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px; margin-right: 10px;">
-                    <strong>View/Download PDF</strong>
-                </a>
-            </p>
+			<a href="${downloadUrl}" target="_blank" style="display: inline-block; background-color: #2196F3; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px; margin-right: 10px;">
+				<strong>View/Download File</strong>
+			</a>
         </div>
     `;
     
@@ -1133,17 +1155,16 @@ function lbryPdfToPlatformPost(lbry) {
     } = lbryToMetrics(lbry, { loadViewCount: false });
     
     return new PlatformPostDetails({
-        id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+        id: new PlatformID(PLATFORM, claimId, plugin.config.id),
         name: lbry.value?.title ?? name,
         author: channelToPlatformAuthorLink(lbry, subCount),
         datetime: lbryVideoToDateTime(lbry),
-        url: lbry.permanent_url,
+        url: shareUrl,
         rating: rating,
         textType: Type.Text.HTML,
         content: htmlContent,
-        images: [lbry.value?.thumbnail?.url],
-        thumbnails: [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])],
-        shareUrl
+        images: lbry.value?.thumbnail?.url ? [lbry.value?.thumbnail?.url] : [],
+        thumbnails: lbry.value?.thumbnail?.url ? [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])] : [],
     });
 }
 
@@ -1297,7 +1318,7 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 	const shareUrl = lbry.signing_channel?.claim_id !== undefined
 	  ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
 	  : format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
-	
+
 	const sdHash = lbry.value?.source?.sd_hash;
 	const sdHashPrefix = sdHash.substring(0, 6);
 	
@@ -1338,11 +1359,10 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 	  name: lbry.value?.title ?? "",
 	  author: channelToPlatformAuthorLink(lbry, subCount),
 	  datetime: lbryVideoToDateTime(lbry),
-	  url: lbry.permanent_url,
+	  url: shareUrl,
 	  rating: rating,
 	  textType: Type.Text.HTML,
-	  content: content,
-	  shareUrl
+	  content: content
 	};
 	
 	if(lbry.value?.thumbnail?.url) {
