@@ -1176,7 +1176,7 @@ function resolveClaimsChannel(claims) {
 	// getsub count using batch request
 	const requests = results.map(claim => {
 		return {
-			url: URL_API_SUB_COUNT,
+			url: `${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
 			body: `auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 		};
@@ -1284,7 +1284,7 @@ function resolveClaims2(claims) {
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-		name: lbry.value?.title ?? "",
+		name: getChannelNameFromChannelClaim(lbry),
 		thumbnail: lbry.value?.thumbnail?.url ?? "",
 		banner: lbry.value?.cover?.url,
 		subscribers: subs,
@@ -1558,7 +1558,7 @@ function channelToPlatformAuthorLink(lbry, subCount) {
 	if (lbry.signing_channel?.claim_id) {
 		return new PlatformAuthorLink(
 			new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel?.value?.title || getFallbackChannelName(lbry) || "",
+			getChannelNameFromContentClaim(lbry),
 			lbry.signing_channel?.permanent_url ?? "",
 			lbry.signing_channel?.value?.thumbnail?.url ?? "",
 			subCount
@@ -1568,12 +1568,39 @@ function channelToPlatformAuthorLink(lbry, subCount) {
 	}
 }
 
-function getFallbackChannelName(lbry) {
-	return lbry?.signing_channel?.name
-		? (lbry.signing_channel.name.startsWith('@')
-			? lbry.signing_channel.name.substring(1)
-			: lbry.signing_channel.name)
-		: '';
+/**
+ * Extracts a channel name from a LBRY channel claim
+ * @param {Object} lbry - The LBRY channel claim
+ * @returns {string} - The formatted channel name
+ */
+function getChannelNameFromChannelClaim(lbry) {
+	
+	if (lbry.value?.title) {
+	  return lbry.value?.title;
+	}
+
+	if (lbry?.name) {
+	  return lbry.name;
+	}
+	
+	return '';
+}
+
+/**
+ * Extracts a channel name from a LBRY content
+ * @param {Object} lbry - The LBRY object containing channel information
+ * @returns {string} - The formatted channel name
+ */
+function getChannelNameFromContentClaim(lbry) {
+	if (lbry.signing_channel?.value?.title) {
+	  return lbry.signing_channel.value.title;
+	}
+	
+	if (lbry.signing_channel?.name) {
+	  return lbry.signing_channel.name;
+	}
+	
+	return '';
 }
 
 function lbryVideoToDateTime(lbry) {
