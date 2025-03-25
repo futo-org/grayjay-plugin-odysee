@@ -8,6 +8,8 @@ const URL_USER_NEW = "https://api.odysee.com/user/new";
 const URL_COMMENTS_LIST = "https://comments.odysee.tv/api/v2?m=comment.List";
 const URL_CHANNEL_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=channel_list"
 const URL_COLLECTION_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=collection_list"
+const URL_GET = "https://api.na-backend.odysee.com/api/v1/proxy?m=get";
+const URL_CHANNEL_SIGN = "https://api.na-backend.odysee.com/api/v1/proxy?m=channel_sign";
 const URL_STATUS = "https://api.na-backend.odysee.com/api/v2/status"
 const URL_REPORT_PLAYBACK = "https://watchman.na-backend.odysee.com/reports/playback"
 const URL_BASE = "https://odysee.com";
@@ -42,7 +44,9 @@ let localConfig = {};
 let shortContentThresholdOptions = [];
 
 const headersToAdd = {
-	"Origin": "https://odysee.com"
+    'origin': 'https://odysee.com',
+    'referer': 'https://odysee.com/',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0'
 }
 
 const TEXT_DOC_TYPES = [
@@ -99,6 +103,10 @@ source.enable = function (config, settings, savedState) {
 				url: channelList.result.items[0].permanent_url,
 			}
 
+			if(channel) {
+				channel.signatureData = channelSign(channel.channelId, `@${channel.name}`);
+			}
+
 			const { auth_token } = getAuthInfo();
 
 			localState = {
@@ -108,7 +116,7 @@ source.enable = function (config, settings, savedState) {
 			}
 
 		} else {
-
+			
 			const { userId, auth_token } = getAuthInfo();
 			localState.auth_token = auth_token;
 			localState.userId = userId;
@@ -377,12 +385,29 @@ function parseDetailsUrl(url) {
 source.getContentDetails = function (url) {
 	const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
 
-	const claim = `lbry://${video_slug}#${video_id}`
-	const result = resolveClaimsVideoDetail([claim])[0];
+	const claim_short_url = `lbry://${video_slug}#${video_id}`
+
+	const [claim] = resolveClaims([claim_short_url]);
+	const isMembersOnly = getIsMemberOnlyClaim(claim)
+	
+	if (!localSettings.allowMatureContent) {
+		claim.value?.tags?.forEach((tag) => {
+			if (MATURE_TAGS.includes(tag)) {
+				throw new AgeException("Mature content is not supported on Odysee");
+			}
+		})
+	}
+	
+	let result = lbryVideoDetailToPlatformVideoDetails(claim);
 
 	result.getContentRecommendations = function () {
-		return source.getContentRecommendations(claim, { claim_id: result.id.value, title: result.name });
+		return source.getContentRecommendations(claim_short_url, { claim_id: result.id.value, title: result.name });
 	};
+
+
+	result.getComments = function () {
+		return source.getComments(url, isMembersOnly);
+	}
 
 	if(IS_TESTING) {
 		result.getContentRecommendations();
@@ -435,9 +460,9 @@ source.getContentRecommendations = (url, initialData) => {
 	return new ContentPager([], false);
 }
 
-source.getComments = function (url) {
+source.getComments = function (url, isMembersOnly=false) {
 	const videoId = url.split('#')[1];
-	return getCommentsPager(url, videoId, 1, true);
+	return getCommentsPager(url, videoId, 1, true, null, isMembersOnly);
 
 }
 source.getSubComments = function (comment) {
@@ -445,7 +470,7 @@ source.getSubComments = function (comment) {
 		comment = JSON.parse(comment);
 	}
 
-	return getCommentsPager(comment.contextUrl, comment.context.claimId, 1, false, comment.context.commentId);
+	return getCommentsPager(comment.contextUrl, comment.context.claimId, 1, false, comment.context.commentId, comment.context.isMembersOnly == "true");
 }
 source.isPlaylistUrl = function (url) {
 	return REGEX_PLAYLIST.test(url) || REGEX_COLLECTION.test(url) || REGEX_FAVORITES.test(url) || REGEX_WATCH_LATER.test(url)
@@ -672,8 +697,13 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 	}
 }
 
-function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) {
-	const body = JSON.stringify({
+function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null, isMembersOnly) {
+
+	if(!isMembersOnly) {
+		isMembersOnly = false;
+	}
+	
+	const query = {
 		"jsonrpc": "2.0",
 		"id": 1,
 		"method": "comment.List",
@@ -685,11 +715,23 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 			"sort_by": 3,
 			... (parentId ? { "parent_id": parentId } : {})
 		}
-	});
+	};
+
+	// currently only accounts with channels can see and add comments on members only content
+	if(isMembersOnly && bridge.isLoggedIn() && localState.channel) {
+		//required for members-only content
+		query.params.is_protected = true;
+		query.params.requestor_channel_id = localState.channel.channelId;
+		query.params.requestor_channel_name	 = `@${localState.channel.name}`;
+		query.params.signature = localState.channel.signatureData.signature;
+		query.params.signing_ts	= localState.channel.signatureData.signing_ts;
+	}
+	
+	const body = JSON.stringify(query);
 
 	const resp = http.POST(URL_COMMENTS_LIST, body, {
 		"Content-Type": "application/json"
-	});
+	}, isMembersOnly);
 
 	if (!resp.isOk) {
 		return new CommentPager([], false, {});
@@ -711,7 +753,7 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 		}
 	}), {
 		"Content-Type": "application/json"
-	});
+	}, isMembersOnly);
 
 	const thumbnailMap = {};
 	const claimsResItems = JSON.parse(claimsResp.body)?.result?.items;
@@ -735,14 +777,14 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 			message: i.comment ?? "",
 			date: i.timestamp,
 			replyCount: i.replies,
-			context: { claimId: i.claim_id, commentId: i.comment_id }
+			context: { claimId: i.claim_id, commentId: i.comment_id, isMembersOnly: isMembersOnly.toString() }
 		});
 
 		return c;
 	}) ?? [];
 
-	const hasMore = result.result.page < result.result.total_pages;
-	return new OdyseeCommentPager(comments, hasMore, { claimId, page, topLevel, parentId });
+	const hasMore = (result?.result?.page ?? 0) < (result?.result?.total_pages ?? 1);
+	return new OdyseeCommentPager(comments, hasMore, { claimId, page, topLevel, parentId, isMembersOnly: isMembersOnly });
 }
 
 //Internals
@@ -903,7 +945,7 @@ class OdyseeCommentPager extends CommentPager {
 	}
 
 	nextPage() {
-		return getCommentsPager(this.context.contextUrl, this.context.claimId, this.context.page + 1, this.context.topLevel, this.context.parentId);
+		return getCommentsPager(this.context.contextUrl, this.context.claimId, this.context.page + 1, this.context.topLevel, this.context.parentId, this.context.isMembersOnly);
 	}
 }
 
@@ -1222,21 +1264,7 @@ function resolveClaimsVideo2(claims) {
 	const results = resolveClaims2(claims);
 	return results.map(x => lbryVideoToPlatformVideo(x));
 }
-function resolveClaimsVideoDetail(claims) {
-	if (!claims || claims.length == 0)
-		return [];
-	const results = resolveClaims(claims);
-	if (!localSettings.allowMatureContent) {
-		results?.forEach((result => {
-			result.value?.tags?.forEach((tag) => {
-				if (MATURE_TAGS.includes(tag)) {
-					throw new AgeException("Mature content is not supported on Odysee");
-				}
-			})
-		}))
-	}
-	return results.map(x => lbryVideoDetailToPlatformVideoDetails(x));
-}
+
 function resolveClaims(claims) {
 	const body = JSON.stringify({
 		method: "resolve",
@@ -1434,8 +1462,19 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 			// Try HLS v6 first
 			const hlsUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}/master.m3u8`;
 			const hlsResponseV6 = http.GET(hlsUrlV6, headersToAdd);
-
-			if (hlsResponseV6.isOk && hlsResponseV6.body) {
+			
+			if(getIsMemberOnlyClaim(lbry)) {
+				sources.push(new VideoUrlSource({
+					name: mediaType ?? "video/mp4",
+					url: getStreamingSourceUrl(lbry),
+					width: videoWidth,
+					height: videoHeight,
+					duration: getVideoDuration(),
+					container: mediaType ?? "video/mp4",
+					requestModifier: { headers: headersToAdd }
+				}));
+			}
+			else if (hlsResponseV6.isOk && hlsResponseV6.body) {
 				sources.push(new HLSSource({
 					name: "HLS (v6)",
 					url: hlsUrlV6,
@@ -2217,6 +2256,76 @@ function createMultiSourcePager(sourcesConfig = []) {
     const pager = new MultiSourceVideoPager();
     sourcesConfig.forEach(config => pager.addSource(config));
     return pager;
+}
+
+function getIsMemberOnlyClaim(lbry) {
+	return lbry?.value?.tags?.includes("c:members-only") ?? false;
+}
+
+function getStreamingSourceUrl(lbry) {
+
+	const request = JSON.stringify({ 
+		"jsonrpc": "2.0", 
+		"method": "get", 
+		"params": { 
+			"uri": lbry.short_url, 
+			"environment": "live" 
+		}
+	});
+
+	const is_member_only_claim = getIsMemberOnlyClaim(lbry);
+	const is_logged_in = bridge.isLoggedIn();
+
+	if(is_member_only_claim && !is_logged_in) {
+		throw new LoginRequiredException("This content is for members only. Please log in with an account that has an active membership to this channel to view this content.")
+	}
+
+	const use_auth = is_member_only_claim && is_logged_in;
+
+	const contentResponse = http.POST(URL_GET, request, {
+		"Content-Type": "application/json"
+	}, use_auth);
+
+	if(contentResponse.isOk) {
+		const body = JSON.parse(contentResponse.body);
+
+		if(!body.error) {
+			return body?.result?.streaming_url;
+		}
+	}
+}
+
+function stringToHex(str) {
+	let hex = '';
+	
+	for (let i = 0; i < str.length; i++) {
+	  // Get character code and convert to hexadecimal
+	  const charCode = str.charCodeAt(i);
+	  const hexValue = charCode.toString(16);
+	  
+	  // Ensure each byte is represented by at least two characters
+	  hex += hexValue.padStart(2, '0');
+	}
+	
+	return hex;
+}
+
+function channelSign(channel_id, channel_name) {
+	const channelSignRequestBody = JSON.stringify({
+		"jsonrpc": "2.0",
+		"method": "channel_sign",
+		"params": {
+			"channel_id": channel_id,
+			"hexdata": stringToHex(channel_name)
+		}
+	})
+	
+	const res = http.POST(URL_CHANNEL_SIGN, channelSignRequestBody, headersToAdd, true);
+	
+	if(res.isOk) {
+		const body = JSON.parse(res.body);
+		return body.result;
+	}
 }
 
 

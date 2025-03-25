@@ -25,7 +25,8 @@
 		"cdn.lbryplayer.xyz",
 		"player.odycdn.com",
 		"comments.odysee.tv",
-		"watchman.na-backend.odysee.com"
+		"watchman.na-backend.odysee.com",
+		"secure.odycdn.com"
 	],
 	"supportedClaimTypes": [
 		3
@@ -67,12 +68,13 @@
 		"51": [
 			"Feature: Add support for audio streams;",
 			"Feature: Add content recommendation support;",
+			"Feature: Play members-only videos from channels membership;",
 			"Feature: Initial support for text Posts (no deep-linking yet);",
 			"Feature: Add shorts tab for channel content with duration lower than 60 seconds;",
 			"Feature: Add setting for channel shorts content duration threshold (default=60 seconds);",
 			"Fix: Use the channel name as a fallback when channel title is not available;",
 			"Fix: Use content timestamp when release_time is not available;",
-			"Fix: Fix playing anonymous videos"
+			"Fix: Fix playing anonymous videos;"
 		]
 	}
 }
