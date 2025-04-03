@@ -256,40 +256,10 @@ source.getChannelContents = function (url, type) {
     if (!localSettings.allowMatureContent) {
         baseQuery.not_tags = MATURE_TAGS;
     }
-
+    
     switch(type) {
-        case undefined:
-        case null:
-        case "":
-        case Type.Feed.Videos:
-            // For regular content (not shorts)
-			// Doing this because some audios don't have duration. Filtering shorts out would filter them out if using the same request.
-            return createMultiSourcePager([
-                {
-                    // Videos longer than threshold
-                    request_body: {
-                        ...baseQuery,
-                        stream_types: ["video"],
-                        duration: [`>${shortContentThreshold}`]
-                    }
-                },
-                {
-                    // All audio content (no duration filtering)
-                    request_body: {
-                        ...baseQuery,
-                        stream_types: ["audio"]
-                    }
-                },
-                {
-                    // All document content (no duration filtering)
-                    request_body: {
-                        ...baseQuery,
-                        stream_types: ["document"]
-                    }
-                }
-            ]);
-            
         case Type.Feed.Shorts:
+            // For shorts, only fetch short videos at the API level
             return createMultiSourcePager([
                 {
                     // Short videos only - using just the upper bound
@@ -297,38 +267,26 @@ source.getChannelContents = function (url, type) {
                         ...baseQuery,
                         stream_types: ["video"],
                         duration: [`<=${shortContentThreshold}`]
-                    }
+                    },
+                    feedType: type
                 }
             ]).nextPage();
-            
+        
+        case Type.Feed.Videos:
         case Type.Feed.Mixed:
-            // For mixed feed, combine everything
+        case undefined:
+        case null:
+        case "":
+        default:
+            // For all other feed types, fetch all content without stream_type filtering
+            // and apply client-side filtering as needed
             return createMultiSourcePager([
                 {
-                    // All videos (no duration filter)
-                    request_body: {
-                        ...baseQuery,
-                        stream_types: ["video"]
-                    }
-                },
-                {
-                    // All audio
-                    request_body: {
-                        ...baseQuery,
-                        stream_types: ["audio"]
-                    }
-                },
-                {
-                    // All documents
-                    request_body: {
-                        ...baseQuery,
-                        stream_types: ["document"]
-                    }
+                    // All content without stream_type filtering
+                    request_body: baseQuery,
+                    feedType: type
                 }
-            ]);
-            
-        default:
-            throw new ScriptException("Unsupported type: " + type);
+            ]).nextPage();
     }
 };
 
@@ -2075,13 +2033,11 @@ function createMultiSourcePager(sourcesConfig = []) {
             videos = [],
             hasMore = true,
             contexts = {},
-            currentSources = new Set(),
-            globalSeenVideoIds = new Set() // Track all unique videos across sources/pages
+            currentSources = new Set()
         } = {}) {
             super(videos, hasMore, { page: 0 });
             this.contexts = contexts;
             this.currentSources = currentSources;
-            this.globalSeenVideoIds = globalSeenVideoIds; // Global deduplication
         }
         
         addSource(sourceConfig) {
@@ -2096,6 +2052,7 @@ function createMultiSourcePager(sourcesConfig = []) {
                     page_size: sourceConfig.request_body.page_size || 20,
                     config: sourceConfig,
                     hasMore: true,
+                    feedType: sourceConfig.feedType // Store the feed type for filtering
                 };
                 this.currentSources.add(sourceId);
             }
@@ -2135,7 +2092,12 @@ function createMultiSourcePager(sourcesConfig = []) {
                 
                 // Add to batch
                 batch.POST(URL_CLAIM_SEARCH, body, { "Content-Type": "application/json" });
-                sourcesToFetch.push({ sourceId, context, updatedRequestBody });
+                sourcesToFetch.push({ 
+                    sourceId, 
+                    context, 
+                    updatedRequestBody,
+                    feedType: context.feedType // Include feed type for filtering
+                });
             }
             
             // Execute batch requests if there are any
@@ -2150,10 +2112,8 @@ function createMultiSourcePager(sourcesConfig = []) {
             // Process responses and collect videos
             const allNewVideos = [];
             let hasMoreOverall = false;
-            const newGlobalSeenVideoIds = new Set(this.globalSeenVideoIds);
-
             for (let i = 0; i < sourcesToFetch.length; i++) {
-                const { sourceId, context, updatedRequestBody } = sourcesToFetch[i];
+                const { sourceId, context, updatedRequestBody, feedType } = sourcesToFetch[i];
                 const res = responses[i];
                 
                 if (!res.isOk) {
@@ -2187,24 +2147,34 @@ function createMultiSourcePager(sourcesConfig = []) {
                         continue;
                     }
                     
-                    // Process items into platform content (videos, audio, documents)
-                    const processedContent = claimSearchItemsToPlatformContent(items);
+                    // Apply client-side filtering based on feed type
+                    let filteredItems = items;
+                    const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+                    
+                    if (feedType === Type.Feed.Videos) {
+                        // For Videos feed, filter out short videos but keep audios and documents
+                        filteredItems = items.filter(item => {
+                            // If it's not a video, keep it (audio, document, etc.)
+                            if (item.value?.stream_type !== "video") {
+                                return true;
+                            }
+                            
+                            // For videos, only keep ones longer than the threshold
+                            const duration = item.value?.video?.duration || 0;
+                            return duration > shortContentThreshold;
+                        });
+                    }
+                    
+                    // Process items into platform content
+                    const processedContent = claimSearchItemsToPlatformContent(filteredItems);
                     
                     // Log information about the items for debugging
-                    if (processedContent.length === 0 && items.length > 0) {
-                        log(`Warning: No content processed from ${items.length} items for source ${sourceId}`);
-                        log(`Stream types in response: ${items.map(item => item.value?.stream_type).join(', ')}`);
+                    if (processedContent.length === 0 && filteredItems.length > 0) {
+                        log(`Warning: No content processed from ${filteredItems.length} items for source ${sourceId}`);
+                        log(`Stream types in response: ${filteredItems.map(item => item.value?.stream_type).join(', ')}`);
                     }
                     
-                    // Filter out duplicates based on global seen IDs
-                    const filteredContent = [];
-                    for (const content of processedContent) {
-                        const contentId = content.id.value;
-                        if (!newGlobalSeenVideoIds.has(contentId)) {
-                            filteredContent.push(content);
-                            newGlobalSeenVideoIds.add(contentId);
-                        }
-                    }
+                    allNewVideos.push(...processedContent);
                     
                     // Determine if this source has more pages
                     const totalPages = responseBody.result.total_pages || 1;
@@ -2215,9 +2185,6 @@ function createMultiSourcePager(sourcesConfig = []) {
                     context.page++;
                     context.hasMore = hasMoreForSource;
                     hasMoreOverall = hasMoreOverall || hasMoreForSource;
-                    
-                    // Add the filtered content to our results
-                    allNewVideos.push(...filteredContent);
                     
                 } catch (error) {
                     log(`Error processing response for source ${sourceId}: ${error.message}`);
@@ -2236,8 +2203,7 @@ function createMultiSourcePager(sourcesConfig = []) {
                     videos: allNewVideos,
                     hasMore: false,
                     contexts: newContexts,
-                    currentSources: newCurrentSources,
-                    globalSeenVideoIds: newGlobalSeenVideoIds
+                    currentSources: newCurrentSources
                 });
             }
             
@@ -2246,8 +2212,7 @@ function createMultiSourcePager(sourcesConfig = []) {
                 videos: allNewVideos,
                 hasMore: hasMoreOverall,
                 contexts: newContexts,
-                currentSources: newCurrentSources,
-                globalSeenVideoIds: newGlobalSeenVideoIds
+                currentSources: newCurrentSources
             });
         }
     }
