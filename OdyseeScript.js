@@ -560,14 +560,14 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 		const intervalSeconds = 10
 		super(intervalSeconds * 1000)
 
-		const { video_slug, video_id, channel_slug, channel_id } = parseDetailsUrl(url)
-		if (channel_slug === undefined) {
-			this.url = `${video_slug}#${video_id}`
-		} else {
-			this.url = `${channel_slug}#${channel_id}/${video_slug}#${video_id}`
-		}
+		const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
 
-		const [claim] = resolveClaims([url]);
+		const claim_short_url = `lbry://${video_slug}#${video_id}`
+
+		const [claim] = resolveClaims([claim_short_url]);
+
+		this.url = claim.canonical_url.replace('lbry://','');
+
 		this.duration = (claim?.value?.video?.duration ?? 0) * 1000;
 
 		this.lastMessage = Date.now()
@@ -593,7 +593,7 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 					protocol: "hls",
 					// not really sure what this means 
 					player: "use-p1",
-					user_id: localState.userId,
+					user_id: localState.userId.toString(),
 					position: seconds * 1000,
 					rel_position: Math.round(seconds * 1000 / this.duration * 100),
 					// hardcoded because there isn't a way in grayjay to know the quality playing

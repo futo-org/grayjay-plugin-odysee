@@ -72,6 +72,7 @@
 			"Feature: Initial support for text Posts (no deep-linking yet);",
 			"Feature: Add shorts tab for channel content with duration lower than 60 seconds;",
 			"Feature: Add setting for channel shorts content duration threshold (default=60 seconds);",
+			"Fix: Playback tracking when 'Provide Odysee Activity' is enabled;",
 			"Fix: Use the channel name as a fallback when channel title is not available;",
 			"Fix: Use content timestamp when release_time is not available;",
 			"Fix: Fix playing anonymous videos;"
