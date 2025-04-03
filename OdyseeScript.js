@@ -1303,60 +1303,70 @@ function lbryVideoToPlatformVideo(lbry) {
 
 function lbryDocumentToPlatformPost(lbry, postContent) {
 	const shareUrl = lbry.signing_channel?.claim_id !== undefined
-	  ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
-	  : format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
 
 	const sdHash = lbry.value?.source?.sd_hash;
 	const sdHashPrefix = sdHash.substring(0, 6);
-	
+
 	if (!postContent) {
-	  // Odysee get the markdown content like this...
-	  const res = http.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
-	  if (res.isOk) {
-		postContent = res.body;
-	  }
+		// Odysee get the markdown content like this...
+		const res = http.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+		if (res.isOk) {
+			postContent = res.body;
+		}
 	}
-	
+
 	let content;
 	const mediaType = lbry?.value?.source?.media_type;
-	
-	switch(mediaType) {
-	  case 'text/markdown':
-		content = markdownToHtml(postContent);
-		break;
-	  case 'text/plain':
-		content = postContent;
-		break;
-	  case 'text/html':
-		content = postContent; // Already HTML
-		break;
-	  default:
-		console.log(`Unhandled media type: ${mediaType}, treating as plain text`);
-		content = postContent;
-		break;
+
+	let images = [];
+
+	switch (mediaType) {
+		case 'text/markdown':
+			content = markdownToHtml(postContent);
+			images = extractImagesFromMarkdown(postContent);
+			break;
+		case 'text/plain':
+			content = postContent;
+			break;
+		case 'text/html':
+			content = postContent; // Already HTML
+			images = extractImagesFromMarkdown(postContent);
+			break;
+		default:
+			console.log(`Unhandled media type: ${mediaType}, treating as plain text`);
+			content = postContent;
+			break;
 	}
-	
+
 	const {
-	  rating,
-	  subCount
+		rating,
+		subCount
 	} = lbryToMetrics(lbry, { loadViewCount: false });
-	
+
 	const platformPostDef = {
-	  id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
-	  name: lbry.value?.title ?? "",
-	  author: channelToPlatformAuthorLink(lbry, subCount),
-	  datetime: lbryVideoToDateTime(lbry),
-	  url: shareUrl,
-	  rating: rating,
-	  textType: Type.Text.HTML,
-	  content: content
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+		name: lbry.value?.title ?? "",
+		author: channelToPlatformAuthorLink(lbry, subCount),
+		datetime: lbryVideoToDateTime(lbry),
+		url: shareUrl,
+		rating: rating,
+		textType: Type.Text.HTML,
+		content: content,
+		thumbnails: []
 	};
-	
-	if(lbry.value?.thumbnail?.url) {
-	  platformPostDef.images = [lbry.value?.thumbnail?.url]; //TODO: extract other images
-	  platformPostDef.thumbnails = [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])];
+
+	if (!images.length && lbry.value?.thumbnail?.url) {
+		images.push(lbry.value?.thumbnail?.url);
 	}
-	
+
+	images.forEach((imageUrl, idx) => {
+		platformPostDef.thumbnails.push(new Thumbnails([new Thumbnail(imageUrl, idx)]));
+	})
+
+	platformPostDef.images = images;
+
 	return new PlatformPostDetails(platformPostDef);
 }
 
@@ -2292,6 +2302,38 @@ function channelSign(channel_id, channel_name) {
 		const body = JSON.parse(res.body);
 		return body.result;
 	}
+}
+
+/**
+ * Extracts image URLs from markdown text
+ * @param {string} markdown - The markdown text to parse
+ * @returns {string[]} - Array of extracted image URLs
+ */
+function extractImagesFromMarkdown(content) {
+    if (!content) return [];
+    
+    // Regular expression to match markdown image syntax
+    const markdownImageRegex = /!\[.*?\]\((.*?)\)/g;
+    
+    // Regular expression to match HTML img tags
+    const htmlImageRegex = /<img[^>]+src="([^">]+)"/g;
+    
+    const markdownMatches = [];
+    const htmlMatches = [];
+    
+    // Extract markdown images
+    let match;
+    while ((match = markdownImageRegex.exec(content)) !== null) {
+        markdownMatches.push(match[1]);
+    }
+    
+    // Extract HTML images
+    while ((match = htmlImageRegex.exec(content)) !== null) {
+        htmlMatches.push(match[1]);
+    }
+    
+    // Combine and deduplicate image URLs
+    return [...new Set([...markdownMatches, ...htmlMatches])];
 }
 
 function passthrough_log(value) {
