@@ -567,7 +567,8 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 			this.url = `${channel_slug}#${channel_id}/${video_slug}#${video_id}`
 		}
 
-		this.duration = resolveClaims([url])[0].value.video.duration * 1000
+		const [claim] = resolveClaims([url]);
+		this.duration = (claim?.value?.video?.duration ?? 0) * 1000;
 
 		this.lastMessage = Date.now()
 	}
@@ -2291,6 +2292,11 @@ function channelSign(channel_id, channel_name) {
 		const body = JSON.parse(res.body);
 		return body.result;
 	}
+}
+
+function passthrough_log(value) {
+    log(value);
+    return value;
 }
 
 
