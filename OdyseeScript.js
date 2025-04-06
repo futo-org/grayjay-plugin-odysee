@@ -8,6 +8,8 @@ const URL_USER_NEW = "https://api.odysee.com/user/new";
 const URL_COMMENTS_LIST = "https://comments.odysee.tv/api/v2?m=comment.List";
 const URL_CHANNEL_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=channel_list"
 const URL_COLLECTION_LIST = "https://api.na-backend.odysee.com/api/v1/proxy?m=collection_list"
+const URL_GET = "https://api.na-backend.odysee.com/api/v1/proxy?m=get";
+const URL_CHANNEL_SIGN = "https://api.na-backend.odysee.com/api/v1/proxy?m=channel_sign";
 const URL_STATUS = "https://api.na-backend.odysee.com/api/v2/status"
 const URL_REPORT_PLAYBACK = "https://watchman.na-backend.odysee.com/reports/playback"
 const URL_BASE = "https://odysee.com";
@@ -15,7 +17,10 @@ const URL_API_SUB_COUNT = 'https://api.odysee.com/subscription/sub_count';
 const PLAYLIST_URL_BASE = "https://odysee.com/$/playlist/"
 
 const CLAIM_TYPE_STREAM = "stream";
+const CLAIM_TYPE_REPOST = "repost";
 const ORDER_BY_RELEASETIME = "release_time";
+
+const MEDIA_CONTENT_TYPE = 1;
 
 const REGEX_DETAILS_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
 const REGEX_CHANNEL_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)(@[^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
@@ -29,10 +34,31 @@ const CLAIM_ID_LENGTH = 40
 const PLATFORM = "Odysee";
 const PLATFORM_CLAIMTYPE = 3;
 
-const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "")
+const EMPTY_AUTHOR = new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "Anonymous", "","https://plugins.grayjay.app/Odysee/OdyseeIcon.png")
 
-let localState = {};
+let localState = {
+	batch_response_cache: {}
+};
 let localSettings
+let localConfig = {};
+let shortContentThresholdOptions = [];
+
+const headersToAdd = {
+    'origin': 'https://odysee.com',
+    'referer': 'https://odysee.com/',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0'
+}
+
+const TEXT_DOC_TYPES = [
+    'text/plain',
+    'text/markdown',
+    'text/html',
+    'text/css',
+    'text/javascript',
+    'text/csv',
+    'text/xml',
+    'application/json'
+];
 
 //Source Method
 source.enable = function (config, settings, savedState) {
@@ -45,7 +71,11 @@ source.enable = function (config, settings, savedState) {
 		log("logging savedState")
 		log(savedState)
 	}
-	localSettings = settings
+	localSettings = settings;
+	localConfig = config;
+
+	shortContentThresholdOptions = loadOptionsForSetting('shortContentThresholdIndex');
+
 	if (!savedState) {
 		if (bridge.isLoggedIn()) {
 			const response = http
@@ -73,6 +103,10 @@ source.enable = function (config, settings, savedState) {
 				url: channelList.result.items[0].permanent_url,
 			}
 
+			if(channel) {
+				channel.signatureData = channelSign(channel.channelId, `@${channel.name}`);
+			}
+
 			const { auth_token } = getAuthInfo();
 
 			localState = {
@@ -82,7 +116,7 @@ source.enable = function (config, settings, savedState) {
 			}
 
 		} else {
-
+			
 			const { userId, auth_token } = getAuthInfo();
 			localState.auth_token = auth_token;
 			localState.userId = userId;
@@ -190,24 +224,72 @@ source.getChannel = function (url) {
 	let [channel] = resolveClaimsChannel([url])
 	return channel
 };
-source.getChannelContents = function (url) {
-	let { id: channel_id } = parseChannelUrl(url)
 
-	if (channel_id.length !== CLAIM_ID_LENGTH) {
-		const platform_channel = source.getChannel(url)
-		channel_id = platform_channel.id.value
-	}
+source.getChannelCapabilities = () => {
+	return {
+		types: [Type.Feed.Videos, Type.Feed.Shorts],
+		sorts: []
+	};
+}
 
-	const query = {
-		channel_ids: [channel_id],
-		page: 1,
-		page_size: 8,
-		claim_type: [CLAIM_TYPE_STREAM],
-		order_by: [ORDER_BY_RELEASETIME]
-	}
-
-	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
+source.getChannelContents = function (url, type) {
+    let { id: channel_id } = parseChannelUrl(url)
+    if (channel_id.length !== CLAIM_ID_LENGTH) {
+        const platform_channel = source.getChannel(url)
+        channel_id = platform_channel.id.value
+    }
+    
+    const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+    
+    // Base query parameters common to all queries
+    const baseQuery = {
+        channel_ids: [channel_id],
+        claim_type: [CLAIM_TYPE_STREAM, CLAIM_TYPE_REPOST],
+        order_by: [ORDER_BY_RELEASETIME],
+        has_source: true,
+        release_time: `<${Math.floor(Date.now() / 1000)}`, // Add current timestamp as release_time upper bound
+        page: 1,
+        page_size: 8
+    };
+    
+    // Add mature content filter if needed
+    if (!localSettings.allowMatureContent) {
+        baseQuery.not_tags = MATURE_TAGS;
+    }
+    
+    switch(type) {
+        case Type.Feed.Shorts:
+            // For shorts, only fetch short videos at the API level
+            return createMultiSourcePager([
+                {
+                    // Short videos only - using just the upper bound
+                    request_body: {
+                        ...baseQuery,
+                        stream_types: ["video"],
+                        duration: [`<=${shortContentThreshold}`]
+                    },
+                    feedType: type
+                }
+            ]).nextPage();
+        
+        case Type.Feed.Videos:
+        case Type.Feed.Mixed:
+        case undefined:
+        case null:
+        case "":
+        default:
+            // For all other feed types, fetch all content without stream_type filtering
+            // and apply client-side filtering as needed
+            return createMultiSourcePager([
+                {
+                    // All content without stream_type filtering
+                    request_body: baseQuery,
+                    feedType: type
+                }
+            ]).nextPage();
+    }
 };
+
 source.getChannelPlaylists = function (url) {
 	let { id: channel_id } = parseChannelUrl(url)
 
@@ -261,13 +343,84 @@ function parseDetailsUrl(url) {
 source.getContentDetails = function (url) {
 	const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
 
-	const claim = `lbry://${video_slug}#${video_id}`
-	return resolveClaimsVideoDetail([claim])[0];
+	const claim_short_url = `lbry://${video_slug}#${video_id}`
+
+	const [claim] = resolveClaims([claim_short_url]);
+	const isMembersOnly = getIsMemberOnlyClaim(claim)
+	
+	if (!localSettings.allowMatureContent) {
+		claim.value?.tags?.forEach((tag) => {
+			if (MATURE_TAGS.includes(tag)) {
+				throw new AgeException("Mature content is not supported on Odysee");
+			}
+		})
+	}
+	
+	let result = lbryVideoDetailToPlatformVideoDetails(claim);
+
+	result.getContentRecommendations = function () {
+		return source.getContentRecommendations(claim_short_url, { claim_id: result.id.value, title: result.name });
+	};
+
+
+	result.getComments = function () {
+		return source.getComments(url, isMembersOnly);
+	}
+
+	if(IS_TESTING) {
+		result.getContentRecommendations();
+	}
+
+	return result;
 };
 
-source.getComments = function (url) {
+source.getContentRecommendations = (url, initialData) => {
+
+	let claim_id = '';
+	let query = '';
+
+	if(initialData && initialData.claim_id && initialData.title) {
+		claim_id = initialData.claim_id;
+		query = initialData.title;
+	} else {
+		const [result] = resolveClaims([url]);
+		claim_id = result.claim_id;
+		query = result.value.title;
+	}
+
+	const params = objectToUrlEncodedString({
+		s: query,
+		related_to: claim_id,
+		from: 0,
+		size: 10,
+		free_only: true,
+		nsfw: localSettings.allowMatureContent,
+		user_id: localState.userId,
+		uid: localState.userId
+	});
+
+	const relatedResponse = http.GET(`https://recsys.odysee.tv/search?${params}`, {});
+
+	if(relatedResponse.isOk) {
+		const body = JSON.parse(relatedResponse.body);
+		const claim_ids = body.map(e => e.claimId);
+
+		const contentPager = claimSearch({
+			claim_ids: claim_ids,
+			no_totals: true,
+			page: 1,
+			page_size: 20
+		});
+
+		return new ContentPager(contentPager, false)
+	}
+
+	return new ContentPager([], false);
+}
+
+source.getComments = function (url, isMembersOnly=false) {
 	const videoId = url.split('#')[1];
-	return getCommentsPager(url, videoId, 1, true);
+	return getCommentsPager(url, videoId, 1, true, null, isMembersOnly);
 
 }
 source.getSubComments = function (comment) {
@@ -275,7 +428,7 @@ source.getSubComments = function (comment) {
 		comment = JSON.parse(comment);
 	}
 
-	return getCommentsPager(comment.contextUrl, comment.context.claimId, 1, false, comment.context.commentId);
+	return getCommentsPager(comment.contextUrl, comment.context.claimId, 1, false, comment.context.commentId, comment.context.isMembersOnly == "true");
 }
 source.isPlaylistUrl = function (url) {
 	return REGEX_PLAYLIST.test(url) || REGEX_COLLECTION.test(url) || REGEX_FAVORITES.test(url) || REGEX_WATCH_LATER.test(url)
@@ -407,14 +560,15 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 		const intervalSeconds = 10
 		super(intervalSeconds * 1000)
 
-		const { video_slug, video_id, channel_slug, channel_id } = parseDetailsUrl(url)
-		if (channel_slug === undefined) {
-			this.url = `${video_slug}#${video_id}`
-		} else {
-			this.url = `${channel_slug}#${channel_id}/${video_slug}#${video_id}`
-		}
+		const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
 
-		this.duration = resolveClaims([url])[0].value.video.duration * 1000
+		const claim_short_url = `lbry://${video_slug}#${video_id}`
+
+		const [claim] = resolveClaims([claim_short_url]);
+
+		this.url = claim.canonical_url.replace('lbry://','');
+
+		this.duration = (claim?.value?.video?.duration ?? 0) * 1000;
 
 		this.lastMessage = Date.now()
 	}
@@ -439,7 +593,7 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 					protocol: "hls",
 					// not really sure what this means 
 					player: "use-p1",
-					user_id: localState.userId,
+					user_id: localState.userId.toString(),
 					position: seconds * 1000,
 					rel_position: Math.round(seconds * 1000 / this.duration * 100),
 					// hardcoded because there isn't a way in grayjay to know the quality playing
@@ -502,8 +656,13 @@ class OdyseePlaybackTracker extends PlaybackTracker {
 	}
 }
 
-function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) {
-	const body = JSON.stringify({
+function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null, isMembersOnly) {
+
+	if(!isMembersOnly) {
+		isMembersOnly = false;
+	}
+	
+	const query = {
 		"jsonrpc": "2.0",
 		"id": 1,
 		"method": "comment.List",
@@ -515,11 +674,23 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 			"sort_by": 3,
 			... (parentId ? { "parent_id": parentId } : {})
 		}
-	});
+	};
+
+	// currently only accounts with channels can see and add comments on members only content
+	if(isMembersOnly && bridge.isLoggedIn() && localState.channel) {
+		//required for members-only content
+		query.params.is_protected = true;
+		query.params.requestor_channel_id = localState.channel.channelId;
+		query.params.requestor_channel_name	 = `@${localState.channel.name}`;
+		query.params.signature = localState.channel.signatureData.signature;
+		query.params.signing_ts	= localState.channel.signatureData.signing_ts;
+	}
+	
+	const body = JSON.stringify(query);
 
 	const resp = http.POST(URL_COMMENTS_LIST, body, {
 		"Content-Type": "application/json"
-	});
+	}, isMembersOnly);
 
 	if (!resp.isOk) {
 		return new CommentPager([], false, {});
@@ -541,7 +712,7 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 		}
 	}), {
 		"Content-Type": "application/json"
-	});
+	}, isMembersOnly);
 
 	const thumbnailMap = {};
 	const claimsResItems = JSON.parse(claimsResp.body)?.result?.items;
@@ -565,14 +736,14 @@ function getCommentsPager(contextUrl, claimId, page, topLevel, parentId = null) 
 			message: i.comment ?? "",
 			date: i.timestamp,
 			replyCount: i.replies,
-			context: { claimId: i.claim_id, commentId: i.comment_id }
+			context: { claimId: i.claim_id, commentId: i.comment_id, isMembersOnly: isMembersOnly.toString() }
 		});
 
 		return c;
 	}) ?? [];
 
-	const hasMore = result.result.page < result.result.total_pages;
-	return new OdyseeCommentPager(comments, hasMore, { claimId, page, topLevel, parentId });
+	const hasMore = (result?.result?.page ?? 0) < (result?.result?.total_pages ?? 1);
+	return new OdyseeCommentPager(comments, hasMore, { claimId, page, topLevel, parentId, isMembersOnly: isMembersOnly });
 }
 
 //Internals
@@ -603,12 +774,13 @@ function getSearchPagerChannels(query, nsfw = false) {
 //Pagers
 class QueryPager extends VideoPager {
 	constructor(query, results) {
-		super(results, results.length >= query.page_size, query);
+		// updated Hasmore condition since some unsupported content types may be hidden and would break the pagination
+		super(results, !!results.length, { query });
 	}
 
 	nextPage() {
-		this.context.page = this.context.page + 1;
-		return getQueryPager(this.context);
+		this.context.query.page = (this.context.query.page || 0) + 1;
+		return getQueryPager(this.context.query);
 	}
 }
 function getPlaylists(channelId, nextPageToLoad, pageSize) {
@@ -732,7 +904,7 @@ class OdyseeCommentPager extends CommentPager {
 	}
 
 	nextPage() {
-		return getCommentsPager(this.context.contextUrl, this.context.claimId, this.context.page + 1, this.context.topLevel, this.context.parentId);
+		return getCommentsPager(this.context.contextUrl, this.context.claimId, this.context.page + 1, this.context.topLevel, this.context.parentId, this.context.isMembersOnly);
 	}
 }
 
@@ -798,36 +970,220 @@ function searchClaims(search, from, size, type = "file", nsfw = false, maxRetry 
 	return claimUrls;
 }
 
+/**
+ * Converts LBRY claim search results to platform content objects
+ * @param {Array} items - The items returned from a claim_search API call
+ * @returns {Array} Array of platform content objects (videos, audio, documents)
+ */
+function claimSearchItemsToPlatformContent(items) {
+    // Define stream types to process
+    const media_stream_types = ['audio', 'video'];
+    const docs_stream_types = ['document'];
+    
+    // Process media types (audio, video)
+    let media = items
+        .filter(z => z.value && media_stream_types.includes(z.value.stream_type))
+        .map(x => lbryVideoToPlatformVideo(x));
+    
+    // Process documents
+    let documents = [];
+    let documentItems = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type));
+
+    if (documentItems.length) {
+        // Separate text documents from binary documents
+        const textDocItems = documentItems.filter(z => 
+            z.value?.source?.media_type && 
+            TEXT_DOC_TYPES.includes(z.value.source.media_type)
+        );
+        
+        // All other document types are treated as binary
+        const binaryDocItems = documentItems.filter(z => 
+            !z.value?.source?.media_type || 
+            !TEXT_DOC_TYPES.includes(z.value.source.media_type)
+        );
+        
+        // Process binary documents with the binary handler
+        const binaryDocs = binaryDocItems.map(item => {
+            return lbryBinaryDocToPlatformPost(item);
+        });
+        
+        // Process text document types normally
+        let documents_body_batch_request = http.batch();
+        textDocItems.forEach(lbry => {
+            const sdHash = lbry.value?.source?.sd_hash;
+            if (sdHash) {
+                const sdHashPrefix = sdHash.substring(0, 6);
+                documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+            }
+        });
+        
+        let textDocs = [];
+        if (textDocItems.length > 0) {
+            let documents_response = documents_body_batch_request.execute();
+            textDocs = textDocItems.map((x, index) => {
+                if (x.value?.source?.sd_hash) {
+                    const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
+                    return lbryDocumentToPlatformPost(x, postContent);
+                }
+                // If there's no sd_hash, return an empty document with error message
+                return lbryDocumentToPlatformPost(x, "Content unavailable");
+            });
+        }
+        
+        // Combine all document types
+        documents = [...binaryDocs, ...textDocs];
+    }
+    
+    // Combine all results and sort by date
+    return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
+}
+
+/**
+ * Updated claimSearch function that handles PDFs by creating HTML content with a PDF viewer link
+ */
 function claimSearch(query) {
-	const body = JSON.stringify({
-		method: "claim_search",
-		params: query
-	});
-	const resp = http.POST(URL_CLAIM_SEARCH, body, {
-		"Content-Type": "application/json"
-	});
-	if (resp.code >= 300)
-		throw "Failed to search claims\n" + resp.body;
-	const result = JSON.parse(resp.body);
-	return result.result.items.map((x) => lbryVideoToPlatformVideo(x));
+    const body = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "claim_search",
+        params: query,
+        id: Date.now()
+    });
+    
+    const resp = http.POST(URL_CLAIM_SEARCH, body, {
+        "Content-Type": "application/json"
+    });
+    
+    if (resp.code >= 300)
+        throw new ScriptException("Failed to search claims\n" + resp.body);
+    
+    const result = JSON.parse(resp.body);
+    const items = result.result.items;
+    
+    // Define stream types to process
+    const media_stream_types = ['audio', 'video'];
+    const docs_stream_types = ['document'];
+    
+    // Process media types (audio, video)
+    let media = items
+        .filter(z => z.value && media_stream_types.includes(z.value.stream_type))
+        .map(x => lbryVideoToPlatformVideo(x));
+    
+    // Process documents
+    let documents = [];
+    let documentItems = items.filter(z => z.value && docs_stream_types.includes(z.value.stream_type));
+    
+    if (documentItems.length) {
+        // Separate text documents from binary documents
+        const textDocItems = documentItems.filter(z => 
+            z.value?.source?.media_type && 
+            TEXT_DOC_TYPES.includes(z.value.source.media_type)
+        );
+        
+        // All other document types are treated as binary
+        const binaryDocItems = documentItems.filter(z => 
+            !z.value?.source?.media_type || 
+            !TEXT_DOC_TYPES.includes(z.value.source.media_type)
+        );
+        
+        // Process binary documents with the binary handler
+        const binaryDocs = binaryDocItems.map(item => {
+            return lbryBinaryDocToPlatformPost(item);
+        });
+        
+        // Process text document types normally
+        let documents_body_batch_request = http.batch();
+        textDocItems.forEach(lbry => {
+            const sdHash = lbry.value?.source?.sd_hash;
+            if (sdHash) {
+                const sdHashPrefix = sdHash.substring(0, 6);
+                documents_body_batch_request.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+            }
+        });
+        
+        let textDocs = [];
+        if (textDocItems.length > 0) {
+            let documents_response = documents_body_batch_request.execute();
+            textDocs = textDocItems.map((x, index) => {
+                if (x.value?.source?.sd_hash) {
+                    const postContent = documents_response[index].isOk ? documents_response[index].body : undefined;
+                    return lbryDocumentToPlatformPost(x, postContent);
+                }
+                // If there's no sd_hash, return an empty document with error message
+                return lbryDocumentToPlatformPost(x, "Content unavailable");
+            });
+        }
+        
+        // Combine all document types
+        documents = [...binaryDocs, ...textDocs];
+    }
+    
+    // Combine all results and sort by date
+    return [...media, ...documents].sort((a, b) => b.datetime - a.datetime);
+}
+
+/**
+ * Converts binary documents to a platform post with an embedded viewer
+ * @param {Object} lbry - The LBRY claim object for a PDF file
+ * @returns {PlatformPostDetails} Platform post with embedded PDF viewer
+ */
+function lbryBinaryDocToPlatformPost(lbry) {
+	
+	const claimId = lbry.claim_id;
+	const name = lbry.name;
+
+    const shareUrl = lbry.signing_channel?.claim_id !== undefined
+        ? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, name, claimId)
+        : format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
+    
+    const sdHash = lbry.value?.source?.sd_hash;
+    const sdHashPrefix = sdHash ? sdHash.substring(0, 6) : "";
+    
+    // Create a direct download URL for the document
+    const downloadUrl = `https://player.odycdn.com/v6/streams/${claimId}/${sdHashPrefix}.mp4`;
+    
+    // Create HTML content with download link
+    const htmlContent = `
+        <div>
+			<a href="${downloadUrl}" target="_blank" style="display: inline-block; background-color: #2196F3; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px; margin-right: 10px;">
+				<strong>View/Download File</strong>
+			</a>
+        </div>
+    `;
+    
+    const {
+        rating,
+        subCount
+    } = lbryToMetrics(lbry, { loadViewCount: false });
+    
+    return new PlatformPostDetails({
+        id: new PlatformID(PLATFORM, claimId, plugin.config.id),
+        name: lbry.value?.title ?? name,
+        author: channelToPlatformAuthorLink(lbry, subCount),
+        datetime: lbryVideoToDateTime(lbry),
+        url: shareUrl,
+        rating: rating,
+        textType: Type.Text.HTML,
+        content: htmlContent,
+        images: lbry.value?.thumbnail?.url ? [lbry.value?.thumbnail?.url] : [],
+        thumbnails: lbry.value?.thumbnail?.url ? [new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)])] : [],
+    });
 }
 
 function resolveClaimsChannel(claims) {
 	if (!Array.isArray(claims) || claims.length === 0)
 		return [];
 	const results = resolveClaims(claims);
-	const batch = http.batch();
 
 	// getsub count using batch request
-	results.forEach(claim => {
-		batch.POST(
-			`${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
-			`auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
-			{ 'Content-Type': 'application/x-www-form-urlencoded' }
-		);
+	const requests = results.map(claim => {
+		return {
+			url: `${URL_API_SUB_COUNT}?claim_id=${claim.claim_id}`,
+			body: `auth_token=${localState.auth_token}&claim_id=${claim.claim_id}`,
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		};
 	});
 
-	const responses = batch.execute();
+	const responses = batchRequest(requests, { useStateCache: true });
 
 	const responseMap = responses.reduce((map, resp) => {
 		try {
@@ -867,21 +1223,7 @@ function resolveClaimsVideo2(claims) {
 	const results = resolveClaims2(claims);
 	return results.map(x => lbryVideoToPlatformVideo(x));
 }
-function resolveClaimsVideoDetail(claims) {
-	if (!claims || claims.length == 0)
-		return [];
-	const results = resolveClaims(claims);
-	if (!localSettings.allowMatureContent) {
-		results?.forEach((result => {
-			result.value?.tags?.forEach((tag) => {
-				if (MATURE_TAGS.includes(tag)) {
-					throw new AgeException("Mature content is not supported on Odysee");
-				}
-			})
-		}))
-	}
-	return results.map(x => lbryVideoDetailToPlatformVideoDetails(x));
-}
+
 function resolveClaims(claims) {
 	const body = JSON.stringify({
 		method: "resolve",
@@ -929,7 +1271,7 @@ function resolveClaims2(claims) {
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-		name: lbry.value?.title ?? "",
+		name: getChannelNameFromChannelClaim(lbry),
 		thumbnail: lbry.value?.thumbnail?.url ?? "",
 		banner: lbry.value?.cover?.url,
 		subscribers: subs,
@@ -949,18 +1291,85 @@ function lbryVideoToPlatformVideo(lbry) {
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel?.value?.title ?? "",
-			lbry.signing_channel?.permanent_url ?? "",
-			lbry.signing_channel?.value?.thumbnail?.url ?? ""),
-		datetime: parseInt(lbry.value.release_time),
-		duration: lbry.value?.video?.duration ?? 0,
+		author: channelToPlatformAuthorLink(lbry),
+		datetime: lbryVideoToDateTime(lbry),
+		duration: lbryToDuration(lbry),
 		viewCount: -1,
 		url: lbry.permanent_url,
 		shareUrl,
 		isLive: false
 	});
 }
+
+function lbryDocumentToPlatformPost(lbry, postContent) {
+	const shareUrl = lbry.signing_channel?.claim_id !== undefined
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
+		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1));
+
+	const sdHash = lbry.value?.source?.sd_hash;
+	const sdHashPrefix = sdHash.substring(0, 6);
+
+	if (!postContent) {
+		// Odysee get the markdown content like this...
+		const res = http.GET(`https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHashPrefix}.mp4`, headersToAdd);
+		if (res.isOk) {
+			postContent = res.body;
+		}
+	}
+
+	let content;
+	const mediaType = lbry?.value?.source?.media_type;
+
+	let images = [];
+
+	switch (mediaType) {
+		case 'text/markdown':
+			content = markdownToHtml(postContent);
+			images = extractImagesFromMarkdown(postContent);
+			break;
+		case 'text/plain':
+			content = postContent;
+			break;
+		case 'text/html':
+			content = postContent; // Already HTML
+			images = extractImagesFromMarkdown(postContent);
+			break;
+		default:
+			console.log(`Unhandled media type: ${mediaType}, treating as plain text`);
+			content = postContent;
+			break;
+	}
+
+	const {
+		rating,
+		subCount
+	} = lbryToMetrics(lbry, { loadViewCount: false });
+
+	const platformPostDef = {
+		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+		name: lbry.value?.title ?? "",
+		author: channelToPlatformAuthorLink(lbry, subCount),
+		datetime: lbryVideoToDateTime(lbry),
+		url: shareUrl,
+		rating: rating,
+		textType: Type.Text.HTML,
+		content: content,
+		thumbnails: []
+	};
+
+	if (!images.length && lbry.value?.thumbnail?.url) {
+		images.push(lbry.value?.thumbnail?.url);
+	}
+
+	images.forEach((imageUrl, idx) => {
+		platformPostDef.thumbnails.push(new Thumbnails([new Thumbnail(imageUrl, idx)]));
+	})
+
+	platformPostDef.images = images;
+
+	return new PlatformPostDetails(platformPostDef);
+}
+
 function format_odysee_share_url_anonymous(video_name, video_claim_id) {
 	return `${URL_BASE}/${video_name}:${video_claim_id.slice(0, 1)}`
 }
@@ -969,180 +1378,175 @@ function format_odysee_share_url(channel_name, channel_claim_id, video_name, vid
 }
 //Convert an LBRY Video to a PlatformVideoDetail
 function lbryVideoDetailToPlatformVideoDetails(lbry) {
-	const headersToAdd = {
-		"Origin": "https://odysee.com"
-	}
-
-	log(lbry)
-
-	if (lbry.value?.video === undefined) {
-		throw new UnavailableException("Odysee live streams are not currently supported")
-	}
 
 	const sdHash = lbry.value?.source?.sd_hash;
-	let source = null;
-	if (sdHash) {
-		const sources = [];
+	const claimId = lbry.claim_id;
+	const videoHeight = lbry.value?.video?.height ?? 0;
+	const videoWidth = lbry.value?.video?.width ?? 0;
+	const streamType = lbry.value?.stream_type;
+	const mediaType = lbry.value?.source?.media_type;
+	const name = lbry.name;
+	let video = null;
 
-		const hlsUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash}/master.m3u8`;
-		const hlsResponse2 = http.GET(hlsUrl2, headersToAdd);
-		if (hlsResponse2.isOk) {
-			sources.push(new HLSSource({
-				name: "HLS (v6)",
-				url: hlsUrl2,
-				duration: lbry.value?.video?.duration ?? 0,
-				priority: true,
-				requestModifier: {
-					headers: headersToAdd
-				}
-			}));
-		} else {
-			const hlsUrl = `https://player.odycdn.com/api/v4/streams/tc/${lbry.name}/${lbry.claim_id}/${sdHash}/master.m3u8`;
-			const hlsResponse = http.GET(hlsUrl, headersToAdd);
-			if (hlsResponse.isOk) {
-				sources.push(new HLSSource({
-					name: "HLS",
-					url: hlsUrl,
-					duration: lbry.value?.video?.duration ?? 0,
-					priority: true,
-					requestModifier: {
-						headers: headersToAdd
-					}
-				}));
-			}
-		}
+	// Helper function to get video duration
+	const getVideoDuration = () => lbryToDuration(lbry);
 
-		const downloadUrl2 = `https://player.odycdn.com/v6/streams/${lbry.claim_id}/${sdHash.substring(0, 6)}.mp4`;
-		console.log("downloadUrl2", downloadUrl2);
-		const downloadResponse2 = http.GET(downloadUrl2, { "Range": "bytes=0-10", ...headersToAdd });
-		if (downloadResponse2.isOk) {
-			sources.push(new VideoUrlSource({
-				name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v6)",
-				url: downloadUrl2,
-				width: lbry.value?.video?.width ?? 0,
-				height: lbry.value?.video?.height ?? 0,
-				duration: lbry.value?.video?.duration ?? 0,
-				container: downloadResponse2.headers["content-type"]?.[0] ?? "video/mp4",
-				requestModifier: {
-					headers: headersToAdd
-				}
-			}));
-		} else {
-			const downloadUrl = `https://player.odycdn.com/api/v4/streams/free/${lbry.name}/${lbry.claim_id}/${sdHash.substring(0, 6)}`;
-			const downloadResponse = http.GET(downloadUrl, { "Range": "bytes=0-0", ...headersToAdd });
-			if (downloadResponse.isOk) {
-				sources.push(new VideoUrlSource({
-					name: "Original " + (lbry.value?.video?.height ?? 0) + "P (v4)",
-					url: downloadUrl,
-					width: lbry.value?.video?.width ?? 0,
-					height: lbry.value?.video?.height ?? 0,
-					duration: lbry.value?.video?.duration ?? 0,
-					container: downloadResponse.headers["content-type"]?.[0] ?? "video/mp4",
-					requestModifier: {
-						headers: headersToAdd
-					}
-				}));
-			}
-		}
-
-		if (sources.length === 0) {
-			throw new UnavailableException("Members Only Content Is Not Currently Supported")
-		}
-
-		source = {
-			video: new VideoSourceDescriptor(sources)
-		};
-	} else {
-		source = {
-			video: new VideoSourceDescriptor([
+	if (!sdHash) {
+		// Handle case with no sdHash
+		if (streamType === 'video') {
+			// Legacy URL format without sdHash
+			video = new VideoSourceDescriptor([
 				new VideoUrlSource({
-					name: "Original " + (lbry.value?.video?.height ?? 0) + "P",
-					url: "https://cdn.lbryplayer.xyz/content/claims/" + lbry.name + "/" + lbry.claim_id + "/stream",
-					width: lbry.value?.video?.width ?? 0,
-					height: lbry.value?.video?.height ?? 0,
-					duration: lbry.value?.video?.duration ?? 0,
-					container: lbry.value?.source?.media_type ?? "",
-					requestModifier: {
-						headers: headersToAdd
-					}
+					name: `Original ${videoHeight}P`,
+					url: `https://cdn.lbryplayer.xyz/content/claims/${name}/${claimId}/stream`,
+					width: videoWidth,
+					height: videoHeight,
+					duration: getVideoDuration(),
+					container: mediaType ?? "",
+					requestModifier: { headers: headersToAdd }
 				})
-			])
-		};
-	}
+			]);
+		} else if (lbry.value?.video === undefined) {
+			throw new UnavailableException("Odysee live streams are not currently supported");
+		}
+	} else {
+		// With sdHash present, handle both audio and video
+		if (streamType === 'audio') {
+			const audioUrl = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}.mp4`;
+			const sources = [
+				new AudioUrlSource({
+					name: mediaType,
+					url: audioUrl,
+					container: mediaType,
+					duration: getVideoDuration(),
+					requestModifier: { headers: headersToAdd }
+				})
+			];
+			video = new UnMuxVideoSourceDescriptor([], sources);
+		}
+		else if (streamType === 'video') {
+			const sources = [];
+			const sdHashPrefix = sdHash.substring(0, 6);
 
-	if (IS_TESTING)
-		console.log(lbry);
-
-	let rating = null;
-	let viewCount = 0;
-	let subCount = 0;
-
-	const headers = {
-		"Content-Type": "application/x-www-form-urlencoded"
-	};
-
-	const [reactionResp, viewCountResp, subCountResp] = http
-		.batch()
-		.POST(URL_REACTIONS, `auth_token=${localState.auth_token}&claim_ids=${lbry.claim_id}`, headers)
-		.POST(URL_VIEW_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.claim_id}`, headers)
-		.POST(URL_API_SUB_COUNT, `auth_token=${localState.auth_token}&claim_id=${lbry.signing_channel.claim_id}`, headers)
-		.execute();
-
-	if (reactionResp && reactionResp.isOk) {
-		const reactionObj = JSON.parse(reactionResp.body);
-		if (reactionObj && reactionObj.success && reactionObj.data && reactionObj.data.others_reactions) {
-			const robj = reactionObj.data.others_reactions[lbry.claim_id];
-			if (robj) {
-				rating = new RatingLikesDislikes(robj.like ?? 0, robj.dislike ?? 0);
+			// Try HLS v6 first
+			const hlsUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHash}/master.m3u8`;
+			const hlsResponseV6 = http.GET(hlsUrlV6, headersToAdd);
+			
+			if(getIsMemberOnlyClaim(lbry)) {
+				sources.push(new VideoUrlSource({
+					name: mediaType ?? "video/mp4",
+					url: getStreamingSourceUrl(lbry),
+					width: videoWidth,
+					height: videoHeight,
+					duration: getVideoDuration(),
+					container: mediaType ?? "video/mp4",
+					requestModifier: { headers: headersToAdd }
+				}));
 			}
+			else if (hlsResponseV6.isOk && hlsResponseV6.body) {
+				sources.push(new HLSSource({
+					name: "HLS (v6)",
+					url: hlsUrlV6,
+					duration: getVideoDuration(),
+					priority: true,
+					requestModifier: { headers: headersToAdd }
+				}));
+			} else {
+				// Fallback to HLS v4
+				const hlsUrlV4 = `https://player.odycdn.com/api/v4/streams/tc/${name}/${claimId}/${sdHash}/master.m3u8`;
+				const hlsResponseV4 = http.GET(hlsUrlV4, headersToAdd);
+				if (hlsResponseV4.isOk && hlsResponseV4.body) {
+					sources.push(new HLSSource({
+						name: "HLS",
+						url: hlsUrlV4,
+						duration: getVideoDuration(),
+						priority: true,
+						requestModifier: { headers: headersToAdd }
+					}));
+				}
+			}
+
+			// Try direct mp4 v6 first
+			const downloadUrlV6 = `https://player.odycdn.com/v6/streams/${claimId}/${sdHashPrefix}.mp4`;
+			const rangeHeaders = { "Range": "bytes=0-10", ...headersToAdd };
+
+			console.log("downloadUrl2", downloadUrlV6);
+			const downloadResponseV6 = http.GET(downloadUrlV6, rangeHeaders);
+
+			if (downloadResponseV6.isOk) {
+				sources.push(new VideoUrlSource({
+					name: `Original ${videoHeight}P (v6)`,
+					url: downloadUrlV6,
+					width: videoWidth,
+					height: videoHeight,
+					duration: getVideoDuration(),
+					container: downloadResponseV6.headers["content-type"]?.[0] ?? "video/mp4",
+					requestModifier: { headers: headersToAdd }
+				}));
+			} else {
+				// Fallback to direct mp4 v4
+				const downloadUrlV4 = `https://player.odycdn.com/api/v4/streams/free/${name}/${claimId}/${sdHashPrefix}`;
+				const downloadResponseV4 = http.GET(downloadUrlV4, { "Range": "bytes=0-0", ...headersToAdd });
+
+				if (downloadResponseV4.isOk) {
+					sources.push(new VideoUrlSource({
+						name: `Original ${videoHeight}P (v4)`,
+						url: downloadUrlV4,
+						width: videoWidth,
+						height: videoHeight,
+						duration: getVideoDuration(),
+						container: downloadResponseV4.headers["content-type"]?.[0] ?? "video/mp4",
+						requestModifier: { headers: headersToAdd }
+					}));
+				}
+			}
+
+			if (sources.length === 0) {
+				throw new UnavailableException("Members Only Content Is Not Currently Supported");
+			}
+
+			video = new VideoSourceDescriptor(sources);
+		}
+		else if (lbry.value?.video === undefined) {
+			throw new UnavailableException("Odysee live streams are not currently supported");
 		}
 	}
 
-
-	if (viewCountResp && viewCountResp.isOk) {
-		const viewCountObj = JSON.parse(viewCountResp.body);
-		if (viewCountObj && viewCountObj.success && viewCountObj.data) {
-			viewCount = viewCountObj.data[0] ?? 0;
-		}
+	if (IS_TESTING) {
+		console.log(lbry);
 	}
 
-	if (subCountResp && subCountResp.isOk) {
-		const subCountObj = JSON.parse(subCountResp.body);
-		if (subCountObj && subCountObj.success && subCountObj.data) {
-			subCount = subCountObj.data[0] ?? 0;
-		}
-	}
+	const {
+		rating,
+		viewCount,
+		subCount
+	} = lbryToMetrics(lbry);
 
-	const shareUrl = lbry.signing_channel?.claim_id !== undefined
-		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
-		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
 
+	// Generate share URL
+	const shareUrl = lbry?.signing_channel?.claim_id
+		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel?.claim_id, name, claimId)
+		: format_odysee_share_url_anonymous(name, claimId.slice(0, 1));
+
+	// Return the final video details object
 	return new PlatformVideoDetails({
-		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
+		id: new PlatformID(PLATFORM, claimId, plugin.config.id),
 		name: lbry.value?.title ?? "",
 		thumbnails: new Thumbnails([new Thumbnail(lbry.value?.thumbnail?.url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
-			lbry.signing_channel?.value?.title ?? "",
-			lbry.signing_channel?.permanent_url,
-			lbry.signing_channel?.value?.thumbnail?.url ?? "",
-			subCount),
-		datetime: parseInt(lbry.value.release_time),
-		duration: lbry.value?.video?.duration ?? 0,
+		author: channelToPlatformAuthorLink(lbry, subCount),
+		datetime: lbryVideoToDateTime(lbry),
+		duration: getVideoDuration(),
 		viewCount,
 		url: lbry.permanent_url,
 		shareUrl,
 		isLive: false,
 		description: lbry.value?.description ?? "",
 		rating,
-		...source
+		video
 	});
 }
 
 const getAuthInfo = function () {
-
-	const headersToAdd = {
-		"Origin": "https://odysee.com"
-	}
 
 	const newUserResp = http.GET(URL_USER_NEW, headersToAdd);
 
@@ -1156,6 +1560,785 @@ const getAuthInfo = function () {
 			return { auth_token: auth_token, userId: userId };
 		}
 	}
+}
+
+function channelToPlatformAuthorLink(lbry, subCount) {
+	if (lbry.signing_channel?.claim_id) {
+		return new PlatformAuthorLink(
+			new PlatformID(PLATFORM, lbry.signing_channel?.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
+			getChannelNameFromContentClaim(lbry),
+			lbry.signing_channel?.permanent_url ?? "",
+			lbry.signing_channel?.value?.thumbnail?.url ?? "",
+			subCount
+		)
+	} else {
+		return EMPTY_AUTHOR;
+	}
+}
+
+/**
+ * Extracts a channel name from a LBRY channel claim
+ * @param {Object} lbry - The LBRY channel claim
+ * @returns {string} - The formatted channel name
+ */
+function getChannelNameFromChannelClaim(lbry) {
+	
+	if (lbry.value?.title) {
+	  return lbry.value?.title;
+	}
+
+	if (lbry?.name) {
+	  return lbry.name;
+	}
+	
+	return '';
+}
+
+/**
+ * Extracts a channel name from a LBRY content
+ * @param {Object} lbry - The LBRY object containing channel information
+ * @returns {string} - The formatted channel name
+ */
+function getChannelNameFromContentClaim(lbry) {
+	if (lbry.signing_channel?.value?.title) {
+	  return lbry.signing_channel.value.title;
+	}
+	
+	if (lbry.signing_channel?.name) {
+	  return lbry.signing_channel.name;
+	}
+	
+	return '';
+}
+
+function lbryVideoToDateTime(lbry) {
+	return parseInt(lbry?.value?.release_time ?? lbry?.timestamp ?? 0)
+}
+
+function lbryToDuration(lbry){
+	return lbry.value?.video?.duration ?? lbry.value?.audio?.duration ?? 0;
+}
+
+function lbryToMetrics(lbry, opts) {
+
+	const claimId = lbry.claim_id;
+
+	if(!opts) {
+		opts = {
+			loadViewCount : false
+		}
+	}
+
+	let rating = null;
+	let viewCount = 0;
+	let subCount = 0;
+
+	const formHeaders = {
+		"Content-Type": "application/x-www-form-urlencoded"
+	};
+
+	const authToken = localState.auth_token;
+
+	const requests = [
+		{
+			url: URL_REACTIONS,
+			headers: formHeaders,
+			body: `auth_token=${authToken}&claim_ids=${claimId}`
+		},
+		{
+			url: URL_API_SUB_COUNT,
+			headers: formHeaders,
+			body: lbry.signing_channel?.claim_id ? `auth_token=${authToken}&claim_id=${lbry.signing_channel?.claim_id}` : ''
+		}
+	]
+
+	if(opts.loadViewCount) {
+		requests.push({
+			url: URL_VIEW_COUNT,
+			headers: formHeaders,
+			body:  `auth_token=${authToken}&claim_id=${claimId}`
+		})
+	}
+
+	const [reactionResp, subCountResp, viewCountResp] = batchRequest(requests, { useStateCache: true });
+
+	// Process reaction response
+	if (reactionResp?.isOk) {
+		const reactionObj = JSON.parse(reactionResp.body);
+		const reactionsData = reactionObj?.data?.others_reactions?.[claimId];
+
+		if (reactionObj?.success && reactionsData) {
+			rating = new RatingLikesDislikes(reactionsData.like ?? 0, reactionsData.dislike ?? 0);
+		}
+	}
+
+	// Process view count response
+	if (opts.loadViewCount && viewCountResp?.isOk) {
+		const viewCountObj = JSON.parse(viewCountResp.body);
+		if (viewCountObj?.success && viewCountObj?.data) {
+			viewCount = viewCountObj.data[0] ?? 0;
+		}
+	}
+
+	// Process subscriber count response
+	if (subCountResp?.isOk) {
+		const subCountObj = JSON.parse(subCountResp.body);
+		if (subCountObj?.success && subCountObj?.data) {
+			subCount = subCountObj.data[0] ?? 0;
+		}
+	}
+
+	return {
+		rating, viewCount, subCount
+	}
+}
+
+function objectToUrlEncodedString(obj) {
+	const encodedParams = [];
+
+	for (const key in obj) {
+		if (obj.hasOwnProperty(key)) {
+			const encodedKey = encodeURIComponent(key);
+			const encodedValue = encodeURIComponent(obj[key]);
+			encodedParams.push(`${encodedKey}=${encodedValue}`);
+		}
+	}
+
+	return encodedParams.join('&');
+}
+
+/**
+ * Converts Markdown text to HTML
+ * @param {string} markdown - The markdown text to convert
+ * @returns {string} The converted HTML
+ */
+function markdownToHtml(markdown) {
+	if (!markdown) return '';
+
+	// Preprocessing - normalize line endings
+	let html = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+	// First, escape all HTML to prevent injection attacks
+	html = escapeHtml(html);
+
+	// Process code blocks (need to handle these first)
+	html = html.replace(/```([a-z]*)\n([\s\S]*?)\n```/g, function(match, language, code) {
+		return `<pre><code class="language-${language}">${code}</code></pre>`;
+	});
+
+	// Process inline code (already escaped)
+	html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+	// Process headings (# Heading, ## Heading, etc)
+	html = html.replace(/^(#{1,6})\s+(.*?)$/gm, function(match, hashes, content) {
+		const level = hashes.length;
+		return `<h${level}>${content.trim()}</h${level}>`;
+	});
+
+	// Process bold (** or __)
+	html = html.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
+
+	// Process italic (* or _)
+	html = html.replace(/(\*|_)(.*?)\1/g, '<em>$2</em>');
+
+	// Process links [text](url) - with URL validation
+	html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, text, url) {
+		// Validate and sanitize URLs
+		if (isValidUrl(url)) {
+			return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${text}</a>`;
+		} else {
+			return text; // If URL is invalid, just show the text
+		}
+	});
+
+	// Process images ![alt](url) - with URL validation
+	html = html.replace(/!\[([^\]]+)\]\(([^)]+)\)/g, function(match, alt, url) {
+		if (isValidUrl(url)) {
+			return `<img src="${sanitizeUrl(url)}" alt="${alt}" loading="lazy">`;
+		} else {
+			return `[Image: ${alt}]`; // Fallback for invalid URLs
+		}
+	});
+
+	// Process horizontal rules
+	html = html.replace(/^([-*_])\1\1+$/gm, '<hr>');
+
+	// Process unordered lists
+	let inList = false;
+	let listHtml = '';
+
+	html = html.split('\n').map(line => {
+		const listMatch = line.match(/^[\*\-\+]\s+(.*)$/);
+		if (listMatch) {
+			if (!inList) {
+				inList = true;
+				listHtml = '<ul>';
+			}
+			listHtml += `<li>${listMatch[1]}</li>`;
+			return null; // Mark for removal
+		} else if (inList && line.trim() === '') {
+			inList = false;
+			const result = listHtml + '</ul>';
+			listHtml = '';
+			return result;
+		} else if (inList) {
+			inList = false;
+			const result = listHtml + '</ul>';
+			listHtml = '';
+			return result + '\n' + line;
+		}
+		return line;
+	}).filter(line => line !== null).join('\n');
+
+	// Clean up any remaining list
+	if (inList) {
+		html += listHtml + '</ul>';
+	}
+
+	// Process ordered lists (similar approach to unordered lists)
+	inList = false;
+	listHtml = '';
+
+	html = html.split('\n').map(line => {
+		const listMatch = line.match(/^\d+\.\s+(.*)$/);
+		if (listMatch) {
+			if (!inList) {
+				inList = true;
+				listHtml = '<ol>';
+			}
+			listHtml += `<li>${listMatch[1]}</li>`;
+			return null; // Mark for removal
+		} else if (inList && line.trim() === '') {
+			inList = false;
+			const result = listHtml + '</ol>';
+			listHtml = '';
+			return result;
+		} else if (inList) {
+			inList = false;
+			const result = listHtml + '</ol>';
+			listHtml = '';
+			return result + '\n' + line;
+		}
+		return line;
+	}).filter(line => line !== null).join('\n');
+
+	// Clean up any remaining list
+	if (inList) {
+		html += listHtml + '</ol>';
+	}
+
+	// Process blockquotes
+	html = html.replace(/^>\s+(.*)$/gm, '<blockquote>$1</blockquote>');
+
+	// Process paragraphs (any text between blank lines that isn't a special element)
+	let inParagraph = false;
+	let paragraphContent = '';
+
+	html = html.split('\n').map(line => {
+		if (line.trim() === '') {
+			if (inParagraph) {
+				inParagraph = false;
+				const result = `<p>${paragraphContent}</p>`;
+				paragraphContent = '';
+				return result;
+			}
+			return '';
+		} else if (line.startsWith('<') && !inParagraph) {
+			// Skip lines that already have HTML tags
+			return line;
+		} else {
+			if (!inParagraph) {
+				inParagraph = true;
+				paragraphContent = line;
+			} else {
+				paragraphContent += ' ' + line;
+			}
+			return null; // Mark for removal
+		}
+	}).filter(line => line !== null).join('\n');
+
+	// Clean up any remaining paragraph
+	if (inParagraph) {
+		html += `<p>${paragraphContent}</p>`;
+	}
+
+	// Process automatic links (bare URLs) with validation
+	html = html.replace(/(?<!["\(])(https?:\/\/[^\s<]+)(?!["\)])/g, function(match, url) {
+		if (isValidUrl(url)) {
+			return `<a href="${sanitizeUrl(url)}" rel="noopener noreferrer">${url}</a>`;
+		} else {
+			return url; // If URL is invalid, just show the text
+		}
+	});
+
+	return html;
+}
+
+/**
+ * Escapes HTML special characters to prevent XSS attacks
+ * @param {string} text - The text to escape
+ * @returns {string} The escaped text
+ */
+function escapeHtml(text) {
+	return text
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#039;');
+}
+
+/**
+ * Validates a URL to ensure it uses an acceptable protocol
+ * @param {string} url - The URL to validate
+ * @returns {boolean} Whether the URL is valid
+ */
+function isValidUrl(url) {
+	// Basic URL validation
+	try {
+		const parsedUrl = new URL(url);
+		// Only allow http, https protocols (no javascript:, data:, etc.)
+		return ['http:', 'https:','lbry:'].includes(parsedUrl.protocol);
+	} catch (e) {
+		// If URL is malformed, consider it invalid
+		return false;
+	}
+}
+
+/**
+ * Sanitizes a URL to prevent XSS attacks
+ * @param {string} url - The URL to sanitize
+ * @returns {string} The sanitized URL
+ */
+function sanitizeUrl(url) {
+	// Ensure URL is a string
+	url = String(url);
+
+	try {
+		// Parse the URL to get components
+		const parsedUrl = new URL(url);
+
+		// Check for potentially dangerous protocols
+		if (!['http:', 'https:','lbry:'].includes(parsedUrl.protocol)) {
+			return '#'; // Return harmless link
+		}
+
+		// Return the original URL if it passed our checks
+		return url;
+	} catch (e) {
+		// If URL parsing fails, return a harmless link
+		return '#';
+	}
+}
+
+function loadOptionsForSetting(settingKey) {
+	return localConfig?.settings?.find((s) => s.variable == settingKey)
+		?.options ?? [];
+}
+
+
+/**
+ * Executes multiple HTTP requests in a batch with optional caching
+ * @param {Array} requests - Array of request objects
+ * @param {Object} opts - Options object
+ * @param {boolean} [opts.useStateCache=false] - Whether to use state caching
+ * @returns {Array} - Array of responses corresponding to the requests
+ */
+function batchRequest(requests, opts = {}) {
+	// Default to using cache if not specified
+	const useStateCache = opts.useStateCache !== undefined ? opts.useStateCache : false;
+
+	// Initialize cache if it doesn't exist
+	if (!localState.batch_response_cache) {
+		localState.batch_response_cache = {};
+	}
+
+	let batch = http.batch();
+	let cacheHits = {};
+	let batchRequestIndices = [];
+	let batchRequestCount = 0;
+
+	// First pass: identify cache hits and prepare batch for non-cached requests
+	for (let i = 0; i < requests.length; i++) {
+		const request = requests[i];
+
+		// Validate request
+		if (!request.url) {
+			throw new ScriptException('An HTTP request must have a URL');
+		}
+
+		// Determine method and create request key
+		const hasBody = !!request.body;
+		const method = request.method || (hasBody ? 'POST' : 'GET');
+		const requestKey = hasBody ?
+			`${method}${request.url}${JSON.stringify(request.body)}` :
+			`${method}${request.url}`;
+
+		// Store the request key for later use
+		request.requestKey = requestKey;
+
+		// Check cache if caching is enabled
+		if (useStateCache && localState.batch_response_cache[requestKey]) {
+			cacheHits[i] = localState.batch_response_cache[requestKey];
+		} else {
+			// Add to batch if not in cache or caching is disabled
+			if (!hasBody) {
+				batch = batch.request(
+					method,
+					request.url,
+					request.headers || {},
+					request.auth || false
+				);
+			} else {
+				batch = batch.requestWithBody(
+					method,
+					request.url,
+					request.body,
+					request.headers || {},
+					request.auth || false
+				);
+			}
+			// Map the original request index to the batch index
+			batchRequestIndices[batchRequestCount] = i;
+			batchRequestCount++;
+		}
+	}
+
+	// Execute batch request only if there are non-cached requests
+	let batchResponses = [];
+	if (batchRequestCount > 0) {
+		try {
+			batchResponses = batch.execute();
+		} catch (error) {
+			throw new ScriptException(`Batch execution failed: ${error.message}`);
+		}
+	}
+
+	// Prepare final response array
+	const finalResponses = new Array(requests.length);
+
+	// Add cache hits to final responses
+	for (const [index, response] of Object.entries(cacheHits)) {
+		finalResponses[parseInt(index)] = response;
+	}
+
+	// Add batch responses to final responses and update cache
+	for (let i = 0; i < batchResponses.length; i++) {
+		const originalIndex = batchRequestIndices[i];
+		const response = batchResponses[i];
+		finalResponses[originalIndex] = response;
+
+		// Update cache with new responses if caching is enabled
+		if (useStateCache) {
+			const requestKey = requests[originalIndex].requestKey;
+			localState.batch_response_cache[requestKey] = response;
+		}
+	}
+
+	return finalResponses;
+}
+
+function createMultiSourcePager(sourcesConfig = []) {
+    class MultiSourceVideoPager extends VideoPager {
+        constructor({
+            videos = [],
+            hasMore = true,
+            contexts = {},
+            currentSources = new Set()
+        } = {}) {
+            super(videos, hasMore, { page: 0 });
+            this.contexts = contexts;
+            this.currentSources = currentSources;
+        }
+        
+        addSource(sourceConfig) {
+            // Create a unique identifier for this source based on the request parameters
+            const streamTypes = sourceConfig.request_body.stream_types || ["all"];
+            const sourceId = `source_${streamTypes.join('_')}_${Date.now() + Math.random()}`;
+
+            if (!this.contexts[sourceId]) {
+                // Initialize context for this source if it doesn't exist
+                this.contexts[sourceId] = {
+                    page: 1, // Start with page 1 for LBRY API
+                    page_size: sourceConfig.request_body.page_size || 20,
+                    config: sourceConfig,
+                    hasMore: true,
+                    feedType: sourceConfig.feedType // Store the feed type for filtering
+                };
+                this.currentSources.add(sourceId);
+            }
+        }
+        
+        nextPage() {
+            // Clone states to avoid mutation
+            const newContexts = {};
+            const newCurrentSources = new Set(this.currentSources);
+            for (const sourceId of this.currentSources) {
+                newContexts[sourceId] = { ...this.contexts[sourceId] };
+            }
+            
+            const batch = http.batch();
+            const sourcesToFetch = [];
+            
+            // Prepare batch requests for sources that have more content
+            for (const sourceId of newCurrentSources) {
+                const context = newContexts[sourceId];
+                if (!context.hasMore) continue;
+                
+                const { config } = context;
+                
+                // Create a new request body with updated pagination
+                const updatedRequestBody = {
+                    ...config.request_body,
+                    page: context.page,
+                    page_size: context.page_size
+                };
+                
+                const body = JSON.stringify({
+                    jsonrpc: "2.0",
+                    method: "claim_search",
+                    params: updatedRequestBody,
+                    id: Date.now() + Math.floor(Math.random() * 1000) // Unique ID for each request
+                });
+                
+                // Add to batch
+                batch.POST(URL_CLAIM_SEARCH, body, { "Content-Type": "application/json" });
+                sourcesToFetch.push({ 
+                    sourceId, 
+                    context, 
+                    updatedRequestBody,
+                    feedType: context.feedType // Include feed type for filtering
+                });
+            }
+            
+            // Execute batch requests if there are any
+            let responses = [];
+            if (sourcesToFetch.length > 0) {
+                responses = batch.execute();
+                if (responses.length !== sourcesToFetch.length) {
+                    throw new ScriptException("Batch response count mismatch");
+                }
+            }
+            
+            // Process responses and collect videos
+            const allNewVideos = [];
+            let hasMoreOverall = false;
+            for (let i = 0; i < sourcesToFetch.length; i++) {
+                const { sourceId, context, updatedRequestBody, feedType } = sourcesToFetch[i];
+                const res = responses[i];
+                
+                if (!res.isOk) {
+                    log(`Request failed for source ${sourceId}: ${res.code} - ${res.body}`);
+                    context.hasMore = false; // Stop trying this source
+                    continue;
+                }
+                
+                try {
+                    const responseBody = JSON.parse(res.body);
+                    
+                    // Check for errors in the response
+                    if (responseBody.error) {
+                        log(`API error for source ${sourceId}: ${JSON.stringify(responseBody.error)}`);
+                        context.hasMore = false;
+                        continue;
+                    }
+                    
+                    if (!responseBody.result || !responseBody.result.items) {
+                        log(`Unexpected response format for source ${sourceId}`);
+                        context.hasMore = false;
+                        continue;
+                    }
+                    
+                    // Get items from the response
+                    const items = responseBody.result.items;
+                    
+                    if (items.length === 0) {
+                        // No more items for this source
+                        context.hasMore = false;
+                        continue;
+                    }
+                    
+                    // Apply client-side filtering based on feed type
+                    let filteredItems = items;
+                    const shortContentThreshold = parseInt(shortContentThresholdOptions[localSettings.shortContentThresholdIndex] || 60);
+                    
+                    if (feedType === Type.Feed.Videos) {
+                        // For Videos feed, filter out short videos but keep audios and documents
+                        filteredItems = items.filter(item => {
+                            // If it's not a video, keep it (audio, document, etc.)
+                            if (item.value?.stream_type !== "video") {
+                                return true;
+                            }
+                            
+                            // For videos, only keep ones longer than the threshold
+                            const duration = item.value?.video?.duration || 0;
+                            return duration > shortContentThreshold;
+                        });
+                    }
+                    
+                    // Process items into platform content
+                    const processedContent = claimSearchItemsToPlatformContent(filteredItems);
+                    
+                    // Log information about the items for debugging
+                    if (processedContent.length === 0 && filteredItems.length > 0) {
+                        log(`Warning: No content processed from ${filteredItems.length} items for source ${sourceId}`);
+                        log(`Stream types in response: ${filteredItems.map(item => item.value?.stream_type).join(', ')}`);
+                    }
+                    
+                    allNewVideos.push(...processedContent);
+                    
+                    // Determine if this source has more pages
+                    const totalPages = responseBody.result.total_pages || 1;
+                    const currentPage = updatedRequestBody.page;
+                    const hasMoreForSource = currentPage < totalPages && items.length > 0;
+                    
+                    // Update context for next pagination
+                    context.page++;
+                    context.hasMore = hasMoreForSource;
+                    hasMoreOverall = hasMoreOverall || hasMoreForSource;
+                    
+                } catch (error) {
+                    log(`Error processing response for source ${sourceId}: ${error.message}`);
+                    context.hasMore = false; // Stop trying this source on error
+                }
+            }
+            
+            // Sort videos by datetime (newest first) if they have datetime
+            if (allNewVideos.length > 0 && allNewVideos[0].datetime) {
+                allNewVideos.sort((a, b) => b.datetime - a.datetime);
+            }
+            
+            // If no sources have more content, mark as complete
+            if (!hasMoreOverall) {
+                return new MultiSourceVideoPager({
+                    videos: allNewVideos,
+                    hasMore: false,
+                    contexts: newContexts,
+                    currentSources: newCurrentSources
+                });
+            }
+            
+            // Return a new pager with the updated state
+            return new MultiSourceVideoPager({
+                videos: allNewVideos,
+                hasMore: hasMoreOverall,
+                contexts: newContexts,
+                currentSources: newCurrentSources
+            });
+        }
+    }
+    
+    // Initialize pager and add sources
+    const pager = new MultiSourceVideoPager();
+    sourcesConfig.forEach(config => pager.addSource(config));
+    return pager;
+}
+
+function getIsMemberOnlyClaim(lbry) {
+	return lbry?.value?.tags?.includes("c:members-only") ?? false;
+}
+
+function getStreamingSourceUrl(lbry) {
+
+	const request = JSON.stringify({ 
+		"jsonrpc": "2.0", 
+		"method": "get", 
+		"params": { 
+			"uri": lbry.short_url, 
+			"environment": "live" 
+		}
+	});
+
+	const is_member_only_claim = getIsMemberOnlyClaim(lbry);
+	const is_logged_in = bridge.isLoggedIn();
+
+	if(is_member_only_claim && !is_logged_in) {
+		throw new LoginRequiredException("This content is for members only. Please log in with an account that has an active membership to this channel to view this content.")
+	}
+
+	const use_auth = is_member_only_claim && is_logged_in;
+
+	const contentResponse = http.POST(URL_GET, request, {
+		"Content-Type": "application/json"
+	}, use_auth);
+
+	if(contentResponse.isOk) {
+		const body = JSON.parse(contentResponse.body);
+
+		if(!body.error) {
+			return body?.result?.streaming_url;
+		}
+	}
+}
+
+function stringToHex(str) {
+	let hex = '';
+	
+	for (let i = 0; i < str.length; i++) {
+	  // Get character code and convert to hexadecimal
+	  const charCode = str.charCodeAt(i);
+	  const hexValue = charCode.toString(16);
+	  
+	  // Ensure each byte is represented by at least two characters
+	  hex += hexValue.padStart(2, '0');
+	}
+	
+	return hex;
+}
+
+function channelSign(channel_id, channel_name) {
+	const channelSignRequestBody = JSON.stringify({
+		"jsonrpc": "2.0",
+		"method": "channel_sign",
+		"params": {
+			"channel_id": channel_id,
+			"hexdata": stringToHex(channel_name)
+		}
+	})
+	
+	const res = http.POST(URL_CHANNEL_SIGN, channelSignRequestBody, headersToAdd, true);
+	
+	if(res.isOk) {
+		const body = JSON.parse(res.body);
+		return body.result;
+	}
+}
+
+/**
+ * Extracts image URLs from markdown text
+ * @param {string} markdown - The markdown text to parse
+ * @returns {string[]} - Array of extracted image URLs
+ */
+function extractImagesFromMarkdown(content) {
+    if (!content) return [];
+    
+    // Regular expression to match markdown image syntax
+    const markdownImageRegex = /!\[.*?\]\((.*?)\)/g;
+    
+    // Regular expression to match HTML img tags
+    const htmlImageRegex = /<img[^>]+src="([^">]+)"/g;
+    
+    const markdownMatches = [];
+    const htmlMatches = [];
+    
+    // Extract markdown images
+    let match;
+    while ((match = markdownImageRegex.exec(content)) !== null) {
+        markdownMatches.push(match[1]);
+    }
+    
+    // Extract HTML images
+    while ((match = htmlImageRegex.exec(content)) !== null) {
+        htmlMatches.push(match[1]);
+    }
+    
+    // Combine and deduplicate image URLs
+    return [...new Set([...markdownMatches, ...htmlMatches])];
+}
+
+function passthrough_log(value) {
+    log(value);
+    return value;
 }
 
 
