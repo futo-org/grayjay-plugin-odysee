@@ -137,7 +137,7 @@ source.getHome = function () {
 		claim_type: featured.claimType,
 		order_by: ["trending_group", "trending_mixed"],
 		page: 1,
-		page_size: 20,
+		page_size: getSettingPageSize(),
 		limit_claims_per_channel: 1
 	};
 	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
@@ -249,7 +249,7 @@ source.getChannelContents = function (url, type) {
         has_source: true,
         release_time: `<${Math.floor(Date.now() / 1000)}`, // Add current timestamp as release_time upper bound
         page: 1,
-        page_size: 8
+        page_size: getSettingPageSize()
     };
     
     // Add mature content filter if needed
@@ -496,6 +496,11 @@ source.getPlaylist = function (url) {
 		})
 	}
 }
+
+function getSettingPageSize() {
+	return localSettings.extraRequestToLoadViewCount ? 10 : 20
+}
+
 function loadPreferences() {
 	return http.POST(
 		URL_PREFERENCES,
@@ -981,9 +986,8 @@ function claimSearchItemsToPlatformContent(items) {
     const docs_stream_types = ['document'];
     
     // Process media types (audio, video)
-    let media = items
-        .filter(z => z.value && media_stream_types.includes(z.value.stream_type))
-        .map(x => lbryVideoToPlatformVideo(x));
+    let mediaItems = items.filter(z => z.value && media_stream_types.includes(z.value.stream_type));
+    let media = lbryVideosToPlatformVideos(mediaItems);
     
     // Process documents
     let documents = [];
@@ -1064,9 +1068,8 @@ function claimSearch(query) {
     const docs_stream_types = ['document'];
     
     // Process media types (audio, video)
-    let media = items
-        .filter(z => z.value && media_stream_types.includes(z.value.stream_type))
-        .map(x => lbryVideoToPlatformVideo(x));
+    let mediaItems = items.filter(z => z.value && media_stream_types.includes(z.value.stream_type));
+    let media = lbryVideosToPlatformVideos(mediaItems);
     
     // Process documents
     let documents = [];
@@ -1153,7 +1156,7 @@ function lbryBinaryDocToPlatformPost(lbry) {
     const {
         rating,
         subCount
-    } = lbryToMetrics(lbry, { loadViewCount: false });
+    } = lbryToMetrics(lbry, { loadSubCount: true, loadRating: true });
     
     return new PlatformPostDetails({
         id: new PlatformID(PLATFORM, claimId, plugin.config.id),
@@ -1215,13 +1218,13 @@ function resolveClaimsVideo(claims) {
 	if (!claims || claims.length == 0)
 		return [];
 	const results = resolveClaims(claims);
-	return results.map(x => lbryVideoToPlatformVideo(x));
+	return lbryVideosToPlatformVideos(results);
 }
 function resolveClaimsVideo2(claims) {
 	if (!claims || claims.length == 0)
 		return [];
 	const results = resolveClaims2(claims);
-	return results.map(x => lbryVideoToPlatformVideo(x));
+	return lbryVideosToPlatformVideos(results);
 }
 
 function resolveClaims(claims) {
@@ -1282,10 +1285,20 @@ function lbryChannelToPlatformChannel(lbry, subs = 0) {
 }
 
 //Convert a LBRY Video (claim) to a PlatformVideo
-function lbryVideoToPlatformVideo(lbry) {
+function lbryVideoToPlatformVideo(lbry, viewCountMap = null) {
 	const shareUrl = lbry.signing_channel?.claim_id !== undefined
 		? format_odysee_share_url(lbry.signing_channel.name, lbry.signing_channel.claim_id, lbry.name, lbry.claim_id)
 		: format_odysee_share_url_anonymous(lbry.name, lbry.claim_id.slice(0, 1))
+
+	let viewCount = 0;
+	
+	// Use batch view count if provided, otherwise fall back to individual request
+	if (viewCountMap && viewCountMap.has(lbry.claim_id)) {
+		viewCount = viewCountMap.get(lbry.claim_id);
+	} else if (localSettings.extraRequestToLoadViewCount && viewCountMap === null) {
+		const metrics = lbryToMetrics(lbry, { loadViewCount: true });
+		viewCount = metrics.viewCount;
+	}
 
 	return new PlatformVideo({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
@@ -1294,11 +1307,66 @@ function lbryVideoToPlatformVideo(lbry) {
 		author: channelToPlatformAuthorLink(lbry),
 		datetime: lbryVideoToDateTime(lbry),
 		duration: lbryToDuration(lbry),
-		viewCount: -1,
+		viewCount: viewCount,
 		url: lbry.permanent_url,
 		shareUrl,
-		isLive: false
+		isLive: false,
+		links: {}
 	});
+}
+
+//Batch load view counts for multiple claim IDs
+function batchLoadViewCounts(claimIds) {
+	if (!claimIds || claimIds.length === 0 || !localSettings.extraRequestToLoadViewCount) {
+		return new Map();
+	}
+
+	const authToken = localState.auth_token;
+	const formHeaders = {
+		"Content-Type": "application/x-www-form-urlencoded"
+	};
+
+	// Create batch requests for view counts
+	const requests = claimIds.map(claimId => ({
+		url: URL_VIEW_COUNT,
+		headers: formHeaders,
+		body: `auth_token=${authToken}&claim_id=${claimId}`
+	}));
+
+	const responses = batchRequest(requests, { useStateCache: true });
+	const viewCountMap = new Map();
+
+	// Process responses
+	responses.forEach((response, index) => {
+		const claimId = claimIds[index];
+		if (response?.isOk) {
+			try {
+				const viewCountObj = JSON.parse(response.body);
+				if (viewCountObj?.success && viewCountObj?.data) {
+					viewCountMap.set(claimId, viewCountObj.data[0] ?? 0);
+				}
+			} catch (error) {
+				console.error(`Error parsing view count for ${claimId}:`, error);
+			}
+		}
+	});
+
+	return viewCountMap;
+}
+
+//Convert array of LBRY Videos to PlatformVideos with batched view count loading
+function lbryVideosToPlatformVideos(lbryVideos) {
+	if (!lbryVideos || lbryVideos.length === 0) {
+		return [];
+	}
+
+	let viewCountMap = null;
+	if (localSettings.extraRequestToLoadViewCount) {
+		const claimIds = lbryVideos.map(lbry => lbry.claim_id);
+		viewCountMap = batchLoadViewCounts(claimIds);
+	}
+
+	return lbryVideos.map(lbry => lbryVideoToPlatformVideo(lbry, viewCountMap));
 }
 
 function lbryDocumentToPlatformPost(lbry, postContent) {
@@ -1343,7 +1411,7 @@ function lbryDocumentToPlatformPost(lbry, postContent) {
 	const {
 		rating,
 		subCount
-	} = lbryToMetrics(lbry, { loadViewCount: false });
+	} = lbryToMetrics(lbry, { loadSubCount: true, loadRating: true });
 
 	const platformPostDef = {
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id),
@@ -1520,7 +1588,7 @@ function lbryVideoDetailToPlatformVideoDetails(lbry) {
 		rating,
 		viewCount,
 		subCount
-	} = lbryToMetrics(lbry);
+	} = lbryToMetrics(lbry, { loadViewCount: true, loadSubCount: true, loadRating: true });
 
 
 	// Generate share URL
@@ -1619,15 +1687,9 @@ function lbryToDuration(lbry){
 	return lbry.value?.video?.duration ?? lbry.value?.audio?.duration ?? 0;
 }
 
-function lbryToMetrics(lbry, opts) {
+function lbryToMetrics(lbry, opts = { loadViewCount: false, loadSubCount: false, loadRating: false }) {
 
 	const claimId = lbry.claim_id;
-
-	if(!opts) {
-		opts = {
-			loadViewCount : false
-		}
-	}
 
 	let rating = null;
 	let viewCount = 0;
@@ -1663,7 +1725,7 @@ function lbryToMetrics(lbry, opts) {
 	const [reactionResp, subCountResp, viewCountResp] = batchRequest(requests, { useStateCache: true });
 
 	// Process reaction response
-	if (reactionResp?.isOk) {
+	if (opts.loadRating && reactionResp?.isOk) {
 		const reactionObj = JSON.parse(reactionResp.body);
 		const reactionsData = reactionObj?.data?.others_reactions?.[claimId];
 
@@ -1681,7 +1743,7 @@ function lbryToMetrics(lbry, opts) {
 	}
 
 	// Process subscriber count response
-	if (subCountResp?.isOk) {
+	if (opts.loadSubCount && subCountResp?.isOk) {
 		const subCountObj = JSON.parse(subCountResp.body);
 		if (subCountObj?.success && subCountObj?.data) {
 			subCount = subCountObj.data[0] ?? 0;
