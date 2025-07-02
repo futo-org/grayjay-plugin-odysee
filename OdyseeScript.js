@@ -60,6 +60,9 @@ const TEXT_DOC_TYPES = [
     'application/json'
 ];
 
+const IS_ANDROID = bridge.buildPlatform === "android";
+const IS_DESKTOP = bridge.buildPlatform === "desktop";
+
 //Source Method
 source.enable = function (config, settings, savedState) {
 	if (IS_TESTING) {
@@ -1272,14 +1275,58 @@ function resolveClaims2(claims) {
 
 //Convert a LBRY Channel (claim) to a PlatformChannel
 function lbryChannelToPlatformChannel(lbry, subs = 0) {
+
+	let description = lbry.value?.description ?? "";
+
+	let lineSeparator = getLineBreakCharacter();
+
+	if(lbry?.value?.email) {
+		description += `${lineSeparator}Contact: ${lbry.value.email}`;
+	}
+
+	if(lbry?.value?.website_url)
+	{
+		description += `${lineSeparator}Site: ${lbry.value.website_url}`;	
+	}
+
+	if(lbry?.value?.tags) {
+		description += `${lineSeparator}Tags: ${lbry.value.tags.join(", ")}`;
+	}
+
+	if(lbry?.meta?.claims_in_channel) {
+		description += `${lineSeparator}Total Upload: ${lbry.meta.claims_in_channel}`;
+	}
+
+	if(lbry?.meta?.creation_timestamp) {
+		description += `${lineSeparator}Created: ${new Date(lbry.meta.creation_timestamp * 1000).toLocaleDateString()}`;
+	}
+
+	if(lbry.canonical_url) {
+		description += `${lineSeparator}URL: ${lbry.canonical_url}`;
+	}
+	
+	if(lbry.claim_id) {
+		description += `${lineSeparator}Claim ID: ${lbry.claim_id}`;
+	}
+
+	if(lbry?.meta?.effective_amount) {
+		description += `${lineSeparator}Staked Credits: ${lbry.meta.effective_amount} LBC`;
+	}
+
+	const odyseeUrl = `https://odysee.com/${lbry.normalized_name}:${lbry.claim_id.slice(0, 1)}`;
+
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, lbry.claim_id, plugin.config.id, PLATFORM_CLAIMTYPE),
 		name: getChannelNameFromChannelClaim(lbry),
 		thumbnail: lbry.value?.thumbnail?.url ?? "",
 		banner: lbry.value?.cover?.url,
 		subscribers: subs,
-		description: lbry.value?.description ?? "",
+		description,
 		url: lbry.permanent_url,
+		urlAlternatives: [
+			lbry.canonical_url,
+			odyseeUrl
+		],
 		links: {}
 	});
 }
@@ -2401,6 +2448,11 @@ function extractImagesFromMarkdown(content) {
 function passthrough_log(value) {
     log(value);
     return value;
+}
+
+function getLineBreakCharacter() {
+	// workaround for desktop since currently it does not support new line characters or html breaks/formatting in channel description
+    return IS_ANDROID ? "\n\n" : " | ";
 }
 
 
