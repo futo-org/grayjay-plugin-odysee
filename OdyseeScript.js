@@ -2450,7 +2450,7 @@ function passthrough_log(value) {
 }
 
 function getLineBreakCharacter() {
-	// woraround for desktop since currently it does not support new line characters or html breaks/formatting
+	// workaround for desktop since currently it does not support new line characters or html breaks/formatting in channel description
     return IS_ANDROID ? "\n\n" : " | ";
 }
 
