@@ -1280,37 +1280,38 @@ function lbryChannelToPlatformChannel(lbry, subs = 0) {
 
 	let lineSeparator = getLineBreakCharacter();
 
-
-	if(lbry.value.email) {
+	if(lbry?.value?.email) {
 		description += `${lineSeparator}Contact: ${lbry.value.email}`;
 	}
 
-	if(lbry.value.website_url)
+	if(lbry?.value?.website_url)
 	{
 		description += `${lineSeparator}Site: ${lbry.value.website_url}`;	
 	}
 
-	if(lbry.value.tags) {
+	if(lbry?.value?.tags) {
 		description += `${lineSeparator}Tags: ${lbry.value.tags.join(", ")}`;
 	}
 
-
-	if(lbry.meta.claims_in_channel) {
+	if(lbry?.meta?.claims_in_channel) {
 		description += `${lineSeparator}Total Upload: ${lbry.meta.claims_in_channel}`;
 	}
 
-	if(lbry.meta.creation_timestamp) {
+	if(lbry?.meta?.creation_timestamp) {
 		description += `${lineSeparator}Created: ${new Date(lbry.meta.creation_timestamp * 1000).toLocaleDateString()}`;
 	}
 
-	description += `${lineSeparator}URL: ${lbry.canonical_url}`;
+	if(lbry.canonical_url) {
+		description += `${lineSeparator}URL: ${lbry.canonical_url}`;
+	}
 	
-	description += `${lineSeparator}Claim ID: ${lbry.claim_id}`;
-
-	if(lbry.meta.effective_amount) {
-		description += `${lineSeparator}Staked Credits: ${lbry.meta.effective_amount} LBC`;
+	if(lbry.claim_id) {
+		description += `${lineSeparator}Claim ID: ${lbry.claim_id}`;
 	}
 
+	if(lbry?.meta?.effective_amount) {
+		description += `${lineSeparator}Staked Credits: ${lbry.meta.effective_amount} LBC`;
+	}
 
 	const odyseeUrl = `https://odysee.com/${lbry.normalized_name}:${lbry.claim_id.slice(0, 1)}`;
 
