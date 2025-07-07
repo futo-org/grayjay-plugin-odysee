@@ -22,8 +22,8 @@ const ORDER_BY_RELEASETIME = "release_time";
 
 const MEDIA_CONTENT_TYPE = 1;
 
-const REGEX_DETAILS_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
-const REGEX_CHANNEL_URL = /^(https:\/\/odysee\.com\/|lbry:\/\/)(@[^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
+const REGEX_DETAILS_URL = /^(https:\/\/(?:odysee\.com|open\.lbry\.com)\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
+const REGEX_CHANNEL_URL = /^(https:\/\/(?:odysee\.com|open\.lbry\.com)\/|lbry:\/\/)(@[^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
 const REGEX_COLLECTION = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F-]+?)$/
 const REGEX_FAVORITES = /^https:\/\/odysee\.com\/\$\/playlist\/favorites$/

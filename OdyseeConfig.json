@@ -92,7 +92,8 @@
 			"Improvement: Add missing information on channels about tab;"
 		],
 		"54": [
-			"Improvement: Display language information in channel details when available;"
+			"Improvement: Display language information in channel details when available;",
+			"Improvement: support open.lbry.com urls;"
 		]
 	}
 }
