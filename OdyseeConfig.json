@@ -7,7 +7,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/Odysee/OdyseeConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/odysee",
 	"scriptUrl": "./OdyseeScript.js",
-  	"version": 53,
+  	"version": 54,
 	"iconUrl": "./OdyseeIcon.png",
 	"id": "1c05bfc3-08b9-42d0-93d3-6d52e0fd34d8",
 	"scriptSignature": "",
@@ -90,6 +90,10 @@
 		],
 		"53": [
 			"Improvement: Add missing information on channels about tab;"
+		],
+		"54": [
+			"Improvement: Display language information in channel details when available;",
+			"Improvement: support open.lbry.com urls;"
 		]
 	}
 }
