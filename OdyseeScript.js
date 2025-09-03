@@ -24,6 +24,8 @@ const MEDIA_CONTENT_TYPE = 1;
 
 const REGEX_DETAILS_URL = /^(https:\/\/(?:odysee\.com|open\.lbry\.com)\/|lbry:\/\/)((@[^\/@]+)(:|#)([a-fA-F0-9]+)\/)?([^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
 const REGEX_CHANNEL_URL = /^(https:\/\/(?:odysee\.com|open\.lbry\.com)\/|lbry:\/\/)(@[^\/@]+)(:|#)([a-fA-F0-9]+)(\?|$)/
+const REGEX_LBRY_EMBED_URL = /^https:\/\/lbry\.tv\/\$\/embed\/([^\/]+)\/([a-fA-F0-9]+)(\?|$)/
+const REGEX_ODYSEE_EMBED_URL = /^https:\/\/odysee\.com\/\$\/embed\/([^\/]+)\/([a-fA-F0-9]+)(\?|$)/
 const REGEX_PLAYLIST = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F]+?)$/
 const REGEX_COLLECTION = /^https:\/\/odysee\.com\/\$\/playlist\/([0-9a-fA-F-]+?)$/
 const REGEX_FAVORITES = /^https:\/\/odysee\.com\/\$\/playlist\/favorites$/
@@ -323,9 +325,11 @@ source.getChannelTemplateByClaimMap = () => {
 // https://odysee.com/@switchedtolinux:0/clearing-the-alpine-forest-weekly-news:2?r=CpwgsVwZ2JEgHpGZZcUZGBPSMdKfZWyH
 // lbry://bitcoin-diamond-hands#3ef3d55066b9bee1419b538b371b463069c1f1a5
 // lbry://@dubdigital#c/bitcoin-diamond-hands#3e
-// https://odysee.com/@Questgenics:f/we-are-anonymous.....🎭:9?r=CpwgsVwZ2JEgHpGZZcUZGBPSMdKfZWyH
+// https://odysee.com/@Questgenics:f/we-are-anonymous.....:9?r=CpwgsVwZ2JEgHpGZZcUZGBPSMdKfZWyH
 source.isContentDetailsUrl = function (url) {
-	return REGEX_DETAILS_URL.test(url)
+	return REGEX_DETAILS_URL.test(url) 
+	|| REGEX_LBRY_EMBED_URL.test(url) 
+	|| REGEX_ODYSEE_EMBED_URL.test(url)
 };
 /**
  * 
@@ -344,11 +348,23 @@ function parseDetailsUrl(url) {
 	return { video_slug, video_id, channel_slug, channel_id, }
 }
 source.getContentDetails = function (url) {
-	const { video_slug, video_id } = parseDetailsUrl(decodeURI(url))
+	let video_slug, video_id;
+	
+	// Check if it's an embed URL
+	if (REGEX_LBRY_EMBED_URL.test(url) || REGEX_ODYSEE_EMBED_URL.test(url)) {
+		({ video_slug, video_id } = parseEmbedUrl(url));
+	} else {
+		({ video_slug, video_id } = parseDetailsUrl(decodeURI(url)));
+	}
 
 	const claim_short_url = `lbry://${video_slug}#${video_id}`
 
 	const [claim] = resolveClaims([claim_short_url]);
+	
+	if (!claim) {
+		throw new ScriptException(`Failed to resolve content: ${claim_short_url}`);
+	}
+	
 	const isMembersOnly = getIsMemberOnlyClaim(claim)
 	
 	if (!localSettings.allowMatureContent) {
@@ -2464,6 +2480,23 @@ function passthrough_log(value) {
 function getLineBreakCharacter() {
 	// workaround for desktop since currently it does not support new line characters or html breaks/formatting in channel description
     return IS_ANDROID ? "\n\n" : " | ";
+}
+
+/**
+ * Parse lbry.tv or odysee.com embed URL
+ * @param {*} url 
+ * @returns video_slug and video_id
+ */
+function parseEmbedUrl(url) {
+	let match_result = url.match(REGEX_LBRY_EMBED_URL)
+	if (!match_result) {
+		match_result = url.match(REGEX_ODYSEE_EMBED_URL)
+	}
+	
+	const video_slug = match_result[1]
+	const video_id = match_result[2]
+	
+	return { video_slug, video_id }
 }
 
 const LANGUAGE_CODES = {
