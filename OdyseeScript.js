@@ -148,6 +148,26 @@ source.getHome = function () {
 	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS });
 };
 
+source.getShorts = function () {
+	const contentData = getOdyseeContentData();
+	const featured = contentData.categories["PRIMARY_CONTENT"];
+	const query = {
+		channel_ids: featured.channelIds,
+		claim_type: featured.claimType,
+		order_by: ["trending_group", "trending_mixed"],
+		page: 1,
+		page_size: getSettingPageSize(),
+		duration: "<=60",
+		fee_amount: "<=0",
+		height: ">=720",  // Minimum height for vertical content
+    	width: "<=480",    // Maximum width to ensure portrait aspect ratio
+		limit_claims_per_channel: 1
+	};
+	
+	const shortOnly = true;
+	return getQueryPager(localSettings.allowMatureContent ? query : { ...query, not_tags: MATURE_TAGS }, shortOnly);
+};
+
 source.searchSuggestions = function (query) {
 	return [];
 };
@@ -779,8 +799,8 @@ function getOdyseeContentData() {
 
 	return contentResp.data["en"];
 }
-function getQueryPager(query) {
-	const initialResults = claimSearch(query);
+function getQueryPager(query, shortsOnly=false) {
+	const initialResults = claimSearch(query, shortsOnly);
 	return new QueryPager(query, initialResults);
 }
 function getSearchPagerVideos(query, nsfw = false, maxRetry = 0, channelId = null, sortBy = null, timeFilter = null) {
@@ -1064,7 +1084,7 @@ function claimSearchItemsToPlatformContent(items) {
 /**
  * Updated claimSearch function that handles PDFs by creating HTML content with a PDF viewer link
  */
-function claimSearch(query) {
+function claimSearch(query, shortsOnly) {
     const body = JSON.stringify({
         jsonrpc: "2.0",
         method: "claim_search",
@@ -1088,7 +1108,7 @@ function claimSearch(query) {
     
     // Process media types (audio, video)
     let mediaItems = items.filter(z => z.value && media_stream_types.includes(z.value.stream_type));
-    let media = lbryVideosToPlatformVideos(mediaItems);
+    let media = lbryVideosToPlatformVideos(mediaItems).filter(z => !shortsOnly || z.isShort );
     
     // Process documents
     let documents = [];
@@ -1385,6 +1405,7 @@ function lbryVideoToPlatformVideo(lbry, viewCountMap = null) {
 		url: lbry.permanent_url,
 		shareUrl,
 		isLive: false,
+		isShort: lbryToIsShort(lbry),
 		links: {}
 	});
 }
@@ -1755,6 +1776,10 @@ function getChannelNameFromContentClaim(lbry) {
 
 function lbryVideoToDateTime(lbry) {
 	return parseInt(lbry?.value?.release_time ?? lbry?.timestamp ?? 0)
+}
+
+function lbryToIsShort(lbry){
+	return lbry.value?.video?.height > lbry.value?.video?.width;
 }
 
 function lbryToDuration(lbry){
