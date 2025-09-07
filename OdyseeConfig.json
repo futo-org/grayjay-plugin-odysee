@@ -7,7 +7,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/Odysee/OdyseeConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/odysee",
 	"scriptUrl": "./OdyseeScript.js",
-  	"version": 55,
+  	"version": 56,
 	"iconUrl": "./OdyseeIcon.png",
 	"id": "1c05bfc3-08b9-42d0-93d3-6d52e0fd34d8",
 	"scriptSignature": "",
@@ -98,6 +98,9 @@
 		"55":[
 			"Improvement: support lbry.tv embed urls;",
 			"Improvement: support odysee.com embed urls;"
+		],
+		"56": [
+			"Improvement: get content for Shorts tab;"
 		]
 	}
 }
